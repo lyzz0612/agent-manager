@@ -1,0 +1,27 @@
+{
+  "expo": {
+    "name": "Agent Manager",
+    "slug": "agent-manager",
+    "version": "0.1.0",
+    "orientation": "portrait",
+    "scheme": "agentmanager",
+    "userInterfaceStyle": "automatic",
+    "newArchEnabled": true,
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.agentmanager.client"
+    },
+    "android": {
+      "package": "com.agentmanager.client",
+      "adaptiveIcon": {
+        "backgroundColor": "#0F172A"
+      }
+    },
+    "web": {
+      "bundler": "metro",
+      "output": "single",
+      "favicon": "./assets/favicon.png"
+    },
+    "plugins": []
+  }
+}

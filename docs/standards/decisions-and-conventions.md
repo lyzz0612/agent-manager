@@ -63,7 +63,7 @@ Go 保留为后续选项。
 
 ### Runner
 
-Runner 初期使用 Node.js CLI。
+Runner 初期使用 Node.js CLI，npm 包名为 **`@lyzz0612/agentops-runner`**。
 
 原因：
 
@@ -73,6 +73,8 @@ Runner 初期使用 Node.js CLI。
 - 便于与 Server 共享协议类型。
 
 Runner 协议必须语言无关，未来可增加 Go Runner。
+
+Agent 安装/升级由 Runner 执行；Docker **`agentops-server`** 镜像不预装 agent。镜像 tag、CI/Release 约定见 `docs/development/` 与 `docs/operations/`。
 
 ### Database
 
@@ -97,9 +99,13 @@ Postgres 不作为初版默认依赖。
 Expo + React Native + React Native Web
 ```
 
-初期只需要 Web 可用，但页面、状态管理和 API client 应为未来 App 复用留出空间。
+Web 与 Android 使用同一套 Client 能力。初期页面、状态管理和 API client 应为多端复用设计。
 
 客户端不直接和 Runner 通信，所有状态和动作都经过 Server。
+
+v1 Client 先指定 Server 地址，再使用单一 Token 登录。Client 本地只保存一个 Server 地址和 Token；设置页可以修改 Server 地址，修改后必须重新登录。
+
+v1 主导航为「机器」和「设置」。手机端使用底部 Tab，Web 端可以使用侧边栏或顶部导航，但信息架构和路由保持一致。Web 与手机都采用逐层进入的信息结构，不采用宽屏左右分栏的主从布局。
 
 ## Server 共识
 
@@ -124,6 +130,8 @@ Server 不管理：
 - Agent 私有配置文件的完整内容。
 - 用户机器上的 workspace 文件。
 
+Server 访问控制初期使用部署侧配置的单一 Token，例如 Docker / Compose / `.env` 中的 `AGENTOPS_TOKEN`（具体变量名以实现为准）。v1 不引入多用户、组织、角色或用户名。
+
 ## CLI / Runner 共识
 
 Runner 是机器侧执行边界。
@@ -136,7 +144,7 @@ Runner 需要支持：
 - agent 检测。
 - agent 安装。
 - agent 升级。
-- agent 配置。
+- agent 卸载。
 - doctor。
 - 动作日志回传。
 
@@ -148,6 +156,10 @@ Runner 本地只保存必要信息：
 - 本地缓存。
 
 Runner 不保存平台主状态。
+
+Runner `daemon` 连接 Server 时自动执行一次 detect；v1 不做周期性后台 detect。
+
+Agent 管理必须通过适配层扩展。v1 内置 Cursor、Codex、Claude Code 三个 adapter；新增 agent 应通过注册表扩展，不应在业务流程中散落特殊分支。
 
 ## v1 范围共识
 
@@ -162,7 +174,7 @@ v1 包含：
 - 机器注册。
 - Agent 检测。
 - Agent 安装状态。
-- 基础安装、升级、配置、doctor。
+- 基础安装、升级、卸载、doctor。
 - 管理动作日志。
 - 基础审计。
 
@@ -176,6 +188,10 @@ v1 不包含：
 - Worktree。
 - 权限审批流。
 - 手机 App 正式发布。
+
+v1 配置能力只读展示，不通过 Web / App 下发修改。
+
+v1 不展示长日志或流式日志；动作结束后只展示成功 / 失败和简短摘要，完整动作日志可入库保留。
 
 ## v2 范围共识
 
@@ -268,6 +284,10 @@ failed
 cancelled
 ```
 
+v1 UI 不提供取消运行中动作。`cancelled` 作为协议保留状态。
+
+同一台机器上，不同 Agent 的动作可以并行；同一台机器同一 Agent 的动作必须串行。
+
 机器在线状态建议区分：
 
 ```text
@@ -302,6 +322,22 @@ Runner 凭据可以撤销。
 Server 不应该默认保存 API key 明文。
 
 未来引入对话和任务执行后，权限审批必须成为一等对象。
+
+删除机器和卸载 Agent 都需要二次确认，并说明后果。
+
+## 删除规范
+
+业务对象删除默认采用软删除。至少 `Machine` 必须只软删，不提供硬删除业务能力。
+
+机器删除规则：
+
+- 用户侧显示为「删除机器」，实现上设置 `deleted_at` 或等价字段。
+- 常规列表和 API 默认过滤已删除机器。
+- `machineId` 全局唯一且不回收。
+- 已删除机器不会复活；同一物理机重新加入时必须重新 `login` 并创建新的 `machineId`。
+- Runner 使用已删除机器的旧凭据连接时，Server 应拒绝并提示重新登录。
+- 历史 `ManagementAction`、`ActionLog`、`AuditLog` 保留。
+- 数据库唯一索引需要带未删除语义，避免软删记录阻止重新注册。
 
 ## 文档规范
 

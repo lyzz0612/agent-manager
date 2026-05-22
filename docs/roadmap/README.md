@@ -8,5 +8,9 @@
 - [v2：完善多机器与管理能力](./version-2-management.md)
 - [v3：对话、任务执行与实时反馈](./version-3-conversation.md)
 
-版本文档只描述目标、能力、核心对象和验收口径。具体实现细节应放到 OpenSpec 变更或对应设计文档中。
+相关产品细节：
+
+- [v1 功能细节](../product/v1-function-details.md)
+
+版本文档只描述目标、能力、核心对象和验收口径。具体功能细节应放到产品文档、OpenSpec 变更或对应设计文档中。
 

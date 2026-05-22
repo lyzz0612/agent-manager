@@ -1,0 +1,32 @@
+{
+  "name": "@lyzz0612/agentops-runner",
+  "version": "0.1.0-dev",
+  "description": "AgentOps Runner CLI: detect, install, upgrade, doctor and uninstall AI coding agents on a managed machine.",
+  "license": "MIT",
+  "type": "module",
+  "bin": {
+    "agentops-runner": "./bin/agentops-runner.mjs"
+  },
+  "files": [
+    "bin",
+    "dist",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=22.0.0"
+  },
+  "exports": {
+    ".": "./dist/index.js"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "clean": "node -e \"import('node:fs').then(fs => fs.rmSync('dist', { recursive: true, force: true }))\"",
+    "test": "node --test --experimental-strip-types --no-warnings=ExperimentalWarning",
+    "test:integration": "node --test --experimental-strip-types --no-warnings=ExperimentalWarning test/integration/cursor-adapter.test.ts test/integration/codex-adapter.test.ts test/integration/claude-code-adapter.test.ts"
+  },
+  "devDependencies": {
+    "@types/node": "^22.7.0",
+    "typescript": "^5.5.4"
+  }
+}
