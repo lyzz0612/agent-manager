@@ -1,0 +1,31 @@
+{
+  "name": "agent-manager",
+  "version": "0.1.0",
+  "private": true,
+  "description": "AgentOps management tool monorepo.",
+  "packageManager": "pnpm@9.15.0",
+  "scripts": {
+    "dev": "pnpm --parallel --filter @agentops/server --filter @agent-manager/client dev",
+    "dev:all": "node ./scripts/dev.mjs",
+    "dev:server": "pnpm --filter @agentops/server dev",
+    "dev:client": "pnpm --filter @agent-manager/client web",
+    "dev:runner": "node ./scripts/dev-runner.mjs",
+    "dev:docker": "docker compose -f docker-compose.yml -f docker-compose.dev.yml up --build",
+    "dev:docker:runner": "docker compose -f docker-compose.yml -f docker-compose.dev.yml --profile runner up --build runner",
+    "dev:docker:all": "docker compose -f docker-compose.yml -f docker-compose.dev.yml --profile server --profile client --profile runner up --build",
+    "build": "pnpm -r --if-present build",
+    "lint": "pnpm -r --if-present lint",
+    "typecheck": "pnpm -r --if-present typecheck",
+    "test": "pnpm -r --if-present test",
+    "test:unit": "pnpm -r --if-present test",
+    "test:runner:integration": "node ./scripts/test-runner-integration.mjs",
+    "smoke": "node ./test/smoke/server-client-runner.mjs",
+    "smoke:allinone": "node ./test/smoke/allinone.mjs",
+    "allinone:build": "docker build -f server/Dockerfile.allinone -t agentops-server:dev-allinone --build-arg VERSION=dev .",
+    "allinone:run": "docker run --rm -p 8080:8080 -e AGENTOPS_TOKEN=dev-token-not-for-production agentops-server:dev-allinone"
+  },
+  "engines": {
+    "node": ">=22.0.0",
+    "pnpm": ">=9.0.0"
+  }
+}

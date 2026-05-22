@@ -1,5 +1,5 @@
 import type { WsEvent } from './types';
-import { buildWebSocketUrl } from './client';
+import { buildWebSocketUrl, normalizeServerEvent } from './client';
 
 export type WsListener = (event: WsEvent) => void;
 export type WsStatus = 'idle' | 'connecting' | 'open' | 'closed' | 'error';
@@ -114,7 +114,8 @@ export class WsClient {
     socket.onmessage = (msg: MessageEvent) => {
       if (typeof msg.data !== 'string') return;
       try {
-        const parsed = JSON.parse(msg.data) as WsEvent;
+        const parsed = normalizeServerEvent(JSON.parse(msg.data));
+        if (!parsed) return;
         for (const listener of this.listeners) {
           listener(parsed);
         }

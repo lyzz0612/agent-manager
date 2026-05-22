@@ -1,0 +1,466 @@
+name: Release
+
+# 仅由版本 tag 或手动触发；CI workflow 负责 lint/typecheck/test。
+# 本 workflow 严禁运行 `pnpm test`，也禁止修改并提交 package.json 版本号。
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: '发布版本号（不含前缀 v，如 0.2.0）'
+        required: true
+        type: string
+      publish_npm:
+        description: '发布 @lyzz0612/agentops-runner npm 包'
+        type: boolean
+        default: false
+      publish_image_server:
+        description: '构建并推送 agentops-server:<version> 镜像'
+        type: boolean
+        default: false
+      publish_image_web:
+        description: '构建并推送 agentops-server:<version>-web 镜像'
+        type: boolean
+        default: false
+      publish_image_allinone:
+        description: '构建并推送 agentops-server:<version>-allinone 镜像'
+        type: boolean
+        default: false
+      publish_android:
+        description: '构建 Android APK 并上传为 Actions Artifact'
+        type: boolean
+        default: false
+
+# 工作流级 permissions 是 reusable workflow / 子 job 的上限。
+# 各 job 仍按需在 job 级显式声明最小集合。
+permissions:
+  contents: write
+  packages: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    name: 解析版本与发布范围
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      version: ${{ steps.resolve.outputs.version }}
+      tag: ${{ steps.resolve.outputs.tag }}
+      is_tag: ${{ steps.resolve.outputs.is_tag }}
+      publish_npm: ${{ steps.flags.outputs.publish_npm }}
+      publish_image_server: ${{ steps.flags.outputs.publish_image_server }}
+      publish_image_web: ${{ steps.flags.outputs.publish_image_web }}
+      publish_image_allinone: ${{ steps.flags.outputs.publish_image_allinone }}
+      publish_android: ${{ steps.flags.outputs.publish_android }}
+      repo_lower: ${{ steps.resolve.outputs.repo_lower }}
+    steps:
+      - name: 解析版本号
+        id: resolve
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          REF_NAME: ${{ github.ref_name }}
+          INPUT_VERSION: ${{ inputs.version }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          if [[ "$EVENT_NAME" == "push" ]]; then
+            tag="$REF_NAME"
+            if [[ ! "$tag" =~ ^v.+ ]]; then
+              echo "tag $tag 不是以 v 开头，禁止 release" >&2
+              exit 1
+            fi
+            version="${tag#v}"
+            echo "is_tag=true" >> "$GITHUB_OUTPUT"
+          else
+            version="${INPUT_VERSION:-}"
+            if [[ -z "$version" ]]; then
+              echo "手动触发必须提供版本号" >&2
+              exit 1
+            fi
+            tag="v$version"
+            echo "is_tag=false" >> "$GITHUB_OUTPUT"
+          fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "repo_lower=$(echo "$GH_REPO" | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_OUTPUT"
+
+      - name: 解析发布范围
+        id: flags
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          IN_NPM: ${{ inputs.publish_npm }}
+          IN_SERVER: ${{ inputs.publish_image_server }}
+          IN_WEB: ${{ inputs.publish_image_web }}
+          IN_ALLINONE: ${{ inputs.publish_image_allinone }}
+          IN_ANDROID: ${{ inputs.publish_android }}
+        run: |
+          set -euo pipefail
+          if [[ "$EVENT_NAME" == "push" ]]; then
+            # tag 触发：默认全套发布
+            for f in publish_npm publish_image_server publish_image_web publish_image_allinone publish_android; do
+              echo "$f=true" >> "$GITHUB_OUTPUT"
+            done
+          else
+            npm="${IN_NPM:-false}"
+            server="${IN_SERVER:-false}"
+            web="${IN_WEB:-false}"
+            allinone="${IN_ALLINONE:-false}"
+            android="${IN_ANDROID:-false}"
+            any="false"
+            for v in "$npm" "$server" "$web" "$allinone" "$android"; do
+              if [[ "$v" == "true" ]]; then any="true"; fi
+            done
+            if [[ "$any" != "true" ]]; then
+              echo "::error::手动触发必须至少选择一项发布产物" >&2
+              exit 1
+            fi
+            {
+              echo "publish_npm=$npm"
+              echo "publish_image_server=$server"
+              echo "publish_image_web=$web"
+              echo "publish_image_allinone=$allinone"
+              echo "publish_android=$android"
+            } >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Workflow summary
+        env:
+          VERSION: ${{ steps.resolve.outputs.version }}
+          TAG: ${{ steps.resolve.outputs.tag }}
+          IS_TAG: ${{ steps.resolve.outputs.is_tag }}
+          NPM: ${{ steps.flags.outputs.publish_npm }}
+          SERVER: ${{ steps.flags.outputs.publish_image_server }}
+          WEB: ${{ steps.flags.outputs.publish_image_web }}
+          ALLINONE: ${{ steps.flags.outputs.publish_image_allinone }}
+          ANDROID: ${{ steps.flags.outputs.publish_android }}
+        run: |
+          {
+            echo "## Release $TAG"
+            echo ""
+            echo "| 项目 | 值 |"
+            echo "| --- | --- |"
+            echo "| version | \`$VERSION\` |"
+            echo "| trigger | ${{ github.event_name }} |"
+            echo "| tag run | $IS_TAG |"
+            echo "| publish_npm | $NPM |"
+            echo "| publish_image_server | $SERVER |"
+            echo "| publish_image_web | $WEB |"
+            echo "| publish_image_allinone | $ALLINONE |"
+            echo "| publish_android | $ANDROID |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  release-draft:
+    name: 创建 GitHub Release Draft
+    needs: prepare
+    if: needs.prepare.outputs.is_tag == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: 渲染 release body
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+          REPO_LOWER: ${{ needs.prepare.outputs.repo_lower }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          mkdir -p .release-out
+          envsubst < .github/release-body.md > .release-out/body.md
+          cat .release-out/body.md
+
+      - name: 创建 draft release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ needs.prepare.outputs.tag }}
+        run: |
+          set -euo pipefail
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "Release $TAG 已存在，更新 body"
+            gh release edit "$TAG" --draft=true --notes-file .release-out/body.md --title "$TAG"
+          else
+            gh release create "$TAG" \
+              --draft \
+              --title "$TAG" \
+              --notes-file .release-out/body.md \
+              --target "${{ github.sha }}"
+          fi
+
+  publish-npm:
+    name: 发布 @lyzz0612/agentops-runner
+    needs: [prepare, release-draft]
+    # release-draft 仅在 tag 触发时运行；dispatch 时通过 always() 跳过它的依赖
+    if: |
+      always() &&
+      needs.prepare.result == 'success' &&
+      (needs.release-draft.result == 'success' || needs.release-draft.result == 'skipped') &&
+      needs.prepare.outputs.publish_npm == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9.15.0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          registry-url: 'https://registry.npmjs.org'
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build runner
+        run: pnpm --filter @lyzz0612/agentops-runner build
+
+      - name: 设置 runner 版本号（仅 CI 工作区，不 commit）
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+        working-directory: cli
+        run: npm pkg set "version=$VERSION"
+
+      - name: Publish to npm
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        working-directory: cli
+        run: npm publish --access public
+
+  publish-image-server:
+    name: 推送镜像 agentops-server:<version>
+    needs: [prepare, release-draft]
+    if: |
+      always() &&
+      needs.prepare.result == 'success' &&
+      (needs.release-draft.result == 'success' || needs.release-draft.result == 'skipped') &&
+      needs.prepare.outputs.publish_image_server == 'true'
+    uses: ./.github/workflows/_publish-image.yml
+    secrets: inherit
+    with:
+      version: ${{ needs.prepare.outputs.version }}
+      repo_lower: ${{ needs.prepare.outputs.repo_lower }}
+      is_tag: ${{ needs.prepare.outputs.is_tag }}
+      tag_suffix: ''
+      latest_tag: 'latest'
+      dockerfile: server/Dockerfile
+
+  publish-image-web:
+    name: 推送镜像 agentops-server:<version>-web
+    needs: [prepare, release-draft]
+    if: |
+      always() &&
+      needs.prepare.result == 'success' &&
+      (needs.release-draft.result == 'success' || needs.release-draft.result == 'skipped') &&
+      needs.prepare.outputs.publish_image_web == 'true'
+    uses: ./.github/workflows/_publish-image.yml
+    secrets: inherit
+    with:
+      version: ${{ needs.prepare.outputs.version }}
+      repo_lower: ${{ needs.prepare.outputs.repo_lower }}
+      is_tag: ${{ needs.prepare.outputs.is_tag }}
+      tag_suffix: '-web'
+      latest_tag: 'latest-web'
+      dockerfile: server/Dockerfile.web
+
+  publish-image-allinone:
+    name: 推送镜像 agentops-server:<version>-allinone
+    needs: [prepare, release-draft]
+    if: |
+      always() &&
+      needs.prepare.result == 'success' &&
+      (needs.release-draft.result == 'success' || needs.release-draft.result == 'skipped') &&
+      needs.prepare.outputs.publish_image_allinone == 'true'
+    uses: ./.github/workflows/_publish-image.yml
+    secrets: inherit
+    with:
+      version: ${{ needs.prepare.outputs.version }}
+      repo_lower: ${{ needs.prepare.outputs.repo_lower }}
+      is_tag: ${{ needs.prepare.outputs.is_tag }}
+      tag_suffix: '-allinone'
+      latest_tag: 'latest-allinone'
+      dockerfile: server/Dockerfile.allinone
+
+  publish-android:
+    name: 构建 Android APK
+    needs: [prepare, release-draft]
+    if: |
+      always() &&
+      needs.prepare.result == 'success' &&
+      (needs.release-draft.result == 'success' || needs.release-draft.result == 'skipped') &&
+      needs.prepare.outputs.publish_android == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: 校验 Android 工程存在
+        run: |
+          set -euo pipefail
+          if [[ ! -d client/android ]]; then
+            echo "::error::client/android 目录不存在；Expo prebuild 或原生工程尚未生成"
+            exit 1
+          fi
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9.15.0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: 写入 keystore（如已配置 secret）
+        id: keystore
+        env:
+          KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          KEYSTORE_PROPERTIES: ${{ secrets.ANDROID_KEYSTORE_PROPERTIES }}
+        run: |
+          set -euo pipefail
+          if [[ -n "${KEYSTORE_BASE64:-}" && -n "${KEYSTORE_PROPERTIES:-}" ]]; then
+            mkdir -p client/android/app
+            echo "$KEYSTORE_BASE64" | base64 -d > client/android/app/release.keystore
+            printf '%s\n' "$KEYSTORE_PROPERTIES" > client/android/keystore.properties
+            echo "have_keystore=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::warning::未配置 ANDROID_KEYSTORE_BASE64 / ANDROID_KEYSTORE_PROPERTIES；将构建 unsigned/debug APK"
+            echo "have_keystore=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Gradle assembleRelease
+        working-directory: client/android
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          set -euo pipefail
+          chmod +x ./gradlew || true
+          ./gradlew assembleRelease -PversionName="$VERSION"
+
+      - name: 收集产物
+        id: collect
+        run: |
+          set -euo pipefail
+          mkdir -p .release-out/android
+          mapfile -t apks < <(find client/android/app/build/outputs/apk -type f -name '*.apk' | sort)
+          if [[ ${#apks[@]} -eq 0 ]]; then
+            echo "::error::未找到 APK 输出"
+            exit 1
+          fi
+          for f in "${apks[@]}"; do
+            cp "$f" .release-out/android/
+          done
+          ls -la .release-out/android
+
+      - name: 上传 Actions Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: agentops-android-${{ needs.prepare.outputs.version }}
+          path: .release-out/android/*.apk
+          if-no-files-found: error
+
+      - name: 上传到 GitHub Release（仅 tag 触发）
+        if: needs.prepare.outputs.is_tag == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ needs.prepare.outputs.tag }}
+        run: |
+          set -euo pipefail
+          gh release upload "$TAG" .release-out/android/*.apk --clobber
+
+  finalize-release:
+    name: 终结 GitHub Release
+    needs:
+      - prepare
+      - release-draft
+      - publish-npm
+      - publish-image-server
+      - publish-image-web
+      - publish-image-allinone
+      - publish-android
+    if: always() && needs.prepare.outputs.is_tag == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    steps:
+      - name: 判断整体发布是否成功
+        id: outcome
+        env:
+          DRAFT_RESULT: ${{ needs.release-draft.result }}
+          NPM_RESULT: ${{ needs.publish-npm.result }}
+          IMG_SERVER_RESULT: ${{ needs.publish-image-server.result }}
+          IMG_WEB_RESULT: ${{ needs.publish-image-web.result }}
+          IMG_ALLINONE_RESULT: ${{ needs.publish-image-allinone.result }}
+          ANDROID_RESULT: ${{ needs.publish-android.result }}
+        run: |
+          set -euo pipefail
+          ok="true"
+          for r in "$DRAFT_RESULT" "$NPM_RESULT" "$IMG_SERVER_RESULT" "$IMG_WEB_RESULT" "$IMG_ALLINONE_RESULT" "$ANDROID_RESULT"; do
+            case "$r" in
+              success) ;;
+              *) ok="false" ;;
+            esac
+          done
+          echo "ok=$ok" >> "$GITHUB_OUTPUT"
+
+      - name: Publish release
+        if: steps.outcome.outputs.ok == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ needs.prepare.outputs.tag }}
+        run: |
+          set -euo pipefail
+          gh release edit "$TAG" --draft=false --repo "${{ github.repository }}"
+          echo "::notice::Release $TAG 已 publish"
+          echo "Release $TAG 已 publish ✅" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: 保留 Draft（部分 publish 失败）
+        if: steps.outcome.outputs.ok != 'true'
+        env:
+          TAG: ${{ needs.prepare.outputs.tag }}
+        run: |
+          {
+            echo "## Release $TAG 保留为 Draft"
+            echo ""
+            echo "| job | result |"
+            echo "| --- | --- |"
+            echo "| release-draft | ${{ needs.release-draft.result }} |"
+            echo "| publish-npm | ${{ needs.publish-npm.result }} |"
+            echo "| publish-image-server | ${{ needs.publish-image-server.result }} |"
+            echo "| publish-image-web | ${{ needs.publish-image-web.result }} |"
+            echo "| publish-image-allinone | ${{ needs.publish-image-allinone.result }} |"
+            echo "| publish-android | ${{ needs.publish-android.result }} |"
+            echo ""
+            echo "请人工核对失败 job，再在 Release 页面手动 publish。"
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "::error::至少一个 publish job 失败，Release 保持 draft"
+          exit 1

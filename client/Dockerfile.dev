@@ -1,0 +1,20 @@
+# Dev image for Client (Expo Web). Sources are bind-mounted and Expo provides
+# its own watcher; this image only sets up Node + pnpm + native deps.
+# syntax=docker/dockerfile:1.6
+
+ARG NODE_VERSION=22-alpine
+FROM node:${NODE_VERSION}
+WORKDIR /app
+
+RUN apk add --no-cache python3 make g++ libc6-compat tini git \
+ && corepack enable \
+ && corepack prepare pnpm@9.15.0 --activate
+
+ENV NODE_ENV=development \
+    BROWSER=none \
+    EXPO_DEVTOOLS_LISTEN_ADDRESS=0.0.0.0 \
+    EXPO_WEB_PORT=8081
+
+EXPOSE 8081
+ENTRYPOINT ["/sbin/tini", "--"]
+CMD ["pnpm", "--filter", "@agent-manager/client", "exec", "expo", "start", "--web", "--port", "8081", "--host", "lan"]

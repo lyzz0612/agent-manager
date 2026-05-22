@@ -9,7 +9,7 @@
  * should switch to importing those types.
  */
 
-export type MachineStatus = 'online' | 'offline';
+export type MachineStatus = 'online' | 'offline' | 'unknown' | 'error';
 
 export type PlatformOs = 'linux' | 'darwin' | 'windows' | 'unknown';
 
@@ -28,9 +28,13 @@ export type AgentInstallStatus =
   | 'installed'
   | 'not_installed'
   | 'unknown'
+  | 'misconfigured'
+  | 'unsupported'
   | 'broken';
 
 export type AgentType =
+  | 'cursor'
+  | 'codex'
   | 'claude-code'
   | 'codex-cli'
   | 'cursor-cli'

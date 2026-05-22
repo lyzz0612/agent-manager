@@ -1,1 +1,17 @@
 node_modules/
+.pnpm-store/
+dist/
+coverage/
+.agentops-dev/
+.data/
+data/
+*.log
+
+# Local env overrides
+.env
+.env.local
+.env.*.local
+
+# Compose / smoke artifacts
+.release-out/
+.smoke-out/

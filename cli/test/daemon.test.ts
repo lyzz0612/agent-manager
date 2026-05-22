@@ -95,7 +95,7 @@ describe('DaemonConnection', () => {
   it('sends a hello message on open and heartbeats periodically', async () => {
     FakeWebSocket.instances.length = 0;
     const connection = new DaemonConnection({
-      url: 'ws://test.example/api/v1/runner/ws',
+      url: 'ws://test.example/ws/runner',
       machineId: 'm_x',
       hostname: 'host',
       platform: 'linux',
@@ -119,7 +119,7 @@ describe('DaemonConnection', () => {
   it('marks credentials stale on server.auth_failure', async () => {
     FakeWebSocket.instances.length = 0;
     const connection = new DaemonConnection({
-      url: 'ws://test.example/api/v1/runner/ws',
+      url: 'ws://test.example/ws/runner',
       machineId: 'm_x',
       hostname: 'host',
       platform: 'linux',
@@ -183,8 +183,9 @@ describe('runDaemon()', () => {
       });
       await new Promise((r) => setTimeout(r, 30));
       const ws = FakeWebSocket.instances[0]!;
-      const reports = ws.sent.filter((m) => m.includes('runner.agent_report'));
-      assert.equal(reports.length, 3);
+      const reports = ws.sent.filter((m) => m.includes('runner.report.detect'));
+      assert.equal(reports.length, 1);
+      assert.equal(JSON.parse(reports[0]!).reports.length, 3);
       await handle.stop();
     } finally {
       rmSync(dir, { recursive: true, force: true });

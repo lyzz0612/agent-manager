@@ -1,0 +1,87 @@
+# AgentOps base Compose stack.
+#
+# Three profiles let you mix host- and container-execution:
+#   * `server`  — Fastify control plane (port 4000)
+#   * `client`  — Expo Web dev server (port 8081)
+#   * `runner`  — agentops-runner daemon (no exposed port; connects out to Server)
+#
+# Combine with `docker-compose.dev.yml` (override) to get hot-reload, source
+# mounts, and shared pnpm caches. Example:
+#
+#   docker compose -f docker-compose.yml -f docker-compose.dev.yml \
+#     --profile server --profile client --profile runner up --build
+#
+# Recommended day-to-day workflow keeps Server + Client on the host and runs
+# only the Runner here (`pnpm dev:docker:runner`).
+
+services:
+  server:
+    profiles: ["server", "all"]
+    image: agentops-server:dev
+    build:
+      context: .
+      dockerfile: server/Dockerfile
+      args:
+        VERSION: dev
+    environment:
+      AGENTOPS_TOKEN: ${AGENTOPS_TOKEN:-dev-token-not-for-production}
+      AGENTOPS_HOST: 0.0.0.0
+      AGENTOPS_PORT: "4000"
+      AGENTOPS_DB_PATH: /data/agentops.db
+      AGENTOPS_LOG_LEVEL: ${AGENTOPS_LOG_LEVEL:-info}
+    ports:
+      - "${AGENTOPS_PORT:-4000}:4000"
+    volumes:
+      - server-data:/data
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:4000/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+
+  client:
+    profiles: ["client", "all"]
+    image: agentops-client:dev
+    build:
+      context: .
+      dockerfile: client/Dockerfile.dev
+    environment:
+      EXPO_WEB_PORT: "8081"
+      AGENTOPS_SERVER_URL: ${AGENTOPS_SERVER_URL:-http://server:4000}
+    ports:
+      - "${EXPO_WEB_PORT:-8081}:8081"
+    depends_on:
+      server:
+        condition: service_healthy
+        required: false
+
+  runner:
+    profiles: ["runner", "all"]
+    image: agentops-runner:dev
+    build:
+      context: .
+      dockerfile: cli/Dockerfile
+    environment:
+      # Container-only state: never default to host $HOME.
+      AGENTOPS_HOME: /var/agentops
+      AGENTOPS_DEV: "1"
+      AGENTOPS_RUNNER_SERVER_URL: ${AGENTOPS_RUNNER_SERVER_URL:-http://server:4000}
+      AGENTOPS_TOKEN: ${AGENTOPS_TOKEN:-dev-token-not-for-production}
+    volumes:
+      - runner-state:/var/agentops
+    depends_on:
+      server:
+        condition: service_healthy
+        required: false
+    # The runner reaches the server over the compose network or, when the
+    # server is on the host, via host.docker.internal:
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+volumes:
+  server-data:
+  runner-state:
+
+networks:
+  default:
+    name: agentops-dev

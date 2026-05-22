@@ -16,6 +16,11 @@ import { createDefaultRegistry } from '../adapters/registry.ts';
 import { ActionExecutor } from '../executor/executor.ts';
 import { RUNNER_VERSION } from '../version.ts';
 import { logger } from '../utils/logger.ts';
+import type {
+  AgentDetectReport,
+  RunnerActionResult,
+  RunnerAgentReport,
+} from '../protocol/types.ts';
 
 export interface DaemonCommandOptions {
   paths?: PathsContext;
@@ -88,7 +93,7 @@ export function runDaemon(options: DaemonCommandOptions = {}): DaemonHandle {
     logger.info(`Daemon connected to ${url}`);
     try {
       const reports = await executor.detectAll();
-      for (const report of reports) connection.send(report);
+      connection.send(toDetectReportMessage(reports) as never);
       logger.info(`Auto-detect complete: ${reports.length} agents reported.`);
     } catch (err) {
       logger.error('Auto-detect failed', err);
@@ -101,8 +106,10 @@ export function runDaemon(options: DaemonCommandOptions = {}): DaemonHandle {
     );
     try {
       const { result, followUpReport } = await executor.execute(action);
-      connection.send(result);
-      if (followUpReport) connection.send(followUpReport);
+      connection.send(toActionResultMessage(result) as never);
+      if (followUpReport) {
+        connection.send(toDetectReportMessage([followUpReport], result.actionId) as never);
+      }
     } catch (err) {
       logger.error(`Action ${action.actionId} crashed`, err);
     }
@@ -131,6 +138,41 @@ export function runDaemon(options: DaemonCommandOptions = {}): DaemonHandle {
 
   connection.start();
   return { stop, done };
+}
+
+function toDetectReportMessage(reports: RunnerAgentReport[], actionId?: string) {
+  return {
+    v: 1,
+    type: 'runner.report.detect',
+    reports: reports.map((item) => toServerDetectReport(item.report)),
+    ...(actionId ? { actionId } : {}),
+  };
+}
+
+function toServerDetectReport(report: AgentDetectReport) {
+  return {
+    agentKind: report.agentType,
+    status: report.status,
+    version: report.version ?? null,
+    execPath: report.executablePath ?? null,
+    onPath: report.onPath,
+    configSummary:
+      report.configFiles
+        .filter((file) => file.exists)
+        .map((file) => file.summary ?? file.path)
+        .join('; ') || null,
+  };
+}
+
+function toActionResultMessage(result: RunnerActionResult) {
+  return {
+    v: 1,
+    type: 'runner.report.action_result',
+    actionId: result.actionId,
+    status: result.state,
+    summary: result.summary,
+    logs: result.logExcerpt.map((message) => ({ level: 'info', message })),
+  };
 }
 
 function getHostname(_paths: PathsContext): string {

@@ -1,0 +1,94 @@
+# dev-fast overlay for docker-compose.yml.
+#
+# Activates source bind-mounts, dependency caches and `tsx watch` / `expo`
+# hot-reload commands so iterating in Docker does not require a full
+# `docker build` per code change.
+#
+# Use together with the base file:
+#   docker compose -f docker-compose.yml -f docker-compose.dev.yml \
+#     --profile server --profile client --profile runner up --build
+
+services:
+  server:
+    build:
+      dockerfile: server/Dockerfile.dev
+    command: ["pnpm", "--filter", "@agentops/server", "dev"]
+    environment:
+      AGENTOPS_DB_PATH: /data/agentops.db
+      AGENTOPS_LOG_LEVEL: debug
+    volumes:
+      - ./server:/app/server
+      - ./packages:/app/packages
+      - ./package.json:/app/package.json
+      - ./pnpm-workspace.yaml:/app/pnpm-workspace.yaml
+      - ./tsconfig.base.json:/app/tsconfig.base.json
+      - pnpm-store:/root/.local/share/pnpm/store
+      - server-node-modules:/app/node_modules
+      - server-pkg-node-modules:/app/server/node_modules
+      - server-data:/data
+    working_dir: /app
+
+  client:
+    build:
+      dockerfile: client/Dockerfile.dev
+    command:
+      [
+        "pnpm",
+        "--filter",
+        "@agent-manager/client",
+        "exec",
+        "expo",
+        "start",
+        "--web",
+        "--port",
+        "8081",
+        "--host",
+        "lan"
+      ]
+    environment:
+      EXPO_WEB_PORT: "8081"
+      # Expo dev tools use this URL when emitting the web bundle.
+      AGENTOPS_SERVER_URL: ${AGENTOPS_SERVER_URL:-http://localhost:4000}
+      # Disable Expo's auto-open browser inside the container.
+      BROWSER: "none"
+      EXPO_DEVTOOLS_LISTEN_ADDRESS: 0.0.0.0
+    volumes:
+      - ./client:/app/client
+      - ./packages:/app/packages
+      - ./package.json:/app/package.json
+      - ./pnpm-workspace.yaml:/app/pnpm-workspace.yaml
+      - pnpm-store:/root/.local/share/pnpm/store
+      - client-node-modules:/app/node_modules
+      - client-pkg-node-modules:/app/client/node_modules
+    working_dir: /app
+
+  runner:
+    build:
+      dockerfile: cli/Dockerfile.dev
+    command: ["node", "./scripts/dev-runner.mjs", "--inside-container"]
+    environment:
+      AGENTOPS_HOME: /var/agentops
+      AGENTOPS_DEV: "1"
+      # When Server runs on host instead of the compose network.
+      AGENTOPS_RUNNER_SERVER_URL: ${AGENTOPS_RUNNER_SERVER_URL:-http://server:4000}
+      AGENTOPS_TOKEN: ${AGENTOPS_TOKEN:-dev-token-not-for-production}
+    volumes:
+      - ./cli:/app/cli
+      - ./packages:/app/packages
+      - ./scripts:/app/scripts
+      - ./package.json:/app/package.json
+      - ./pnpm-workspace.yaml:/app/pnpm-workspace.yaml
+      - pnpm-store:/root/.local/share/pnpm/store
+      - runner-node-modules:/app/node_modules
+      - runner-pkg-node-modules:/app/cli/node_modules
+      - runner-state:/var/agentops
+    working_dir: /app
+
+volumes:
+  pnpm-store:
+  server-node-modules:
+  server-pkg-node-modules:
+  client-node-modules:
+  client-pkg-node-modules:
+  runner-node-modules:
+  runner-pkg-node-modules:

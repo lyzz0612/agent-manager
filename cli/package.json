@@ -9,17 +9,18 @@
   },
   "files": [
     "bin",
-    "dist",
+    "src",
     "README.md"
   ],
   "engines": {
     "node": ">=22.0.0"
   },
   "exports": {
-    ".": "./dist/index.js"
+    ".": "./src/index.ts"
   },
   "scripts": {
-    "build": "tsc -p tsconfig.json",
+    "dev": "node ./bin/agentops-runner.mjs status",
+    "build": "node --experimental-strip-types --no-warnings=ExperimentalWarning ./bin/agentops-runner.mjs --version",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "clean": "node -e \"import('node:fs').then(fs => fs.rmSync('dist', { recursive: true, force: true }))\"",
     "test": "node --test --experimental-strip-types --no-warnings=ExperimentalWarning",

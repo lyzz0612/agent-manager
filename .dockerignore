@@ -1,0 +1,38 @@
+# Keep build context small.
+**/node_modules
+**/dist
+**/coverage
+**/.expo
+**/web-build
+**/.cache
+**/.vscode
+**/.idea
+**/.DS_Store
+
+# Local dev state must not leak into the image.
+.agentops-dev
+.data
+data
+**/data/*.db*
+*.log
+
+# Tests, docs, and OpenSpec are not needed at runtime.
+test
+**/test
+**/__tests__
+openspec
+docs
+
+# Git internals
+.git
+.gitignore
+.github
+
+# Editor files
+.editorconfig
+
+# Pre-built images / scripts kept out of context
+docker-compose*.yml
+**/.env
+**/.env.*
+!**/.env.example

@@ -1,0 +1,21 @@
+# Dev image for Server: just brings the workspace + pnpm + tsx; sources are
+# bind-mounted from the host and `pnpm dev` (tsx watch) handles reload.
+# syntax=docker/dockerfile:1.6
+
+ARG NODE_VERSION=22-alpine
+FROM node:${NODE_VERSION}
+WORKDIR /app
+
+RUN apk add --no-cache python3 make g++ libc6-compat tini \
+ && corepack enable \
+ && corepack prepare pnpm@9.15.0 --activate
+
+ENV NODE_ENV=development \
+    AGENTOPS_HOST=0.0.0.0 \
+    AGENTOPS_PORT=4000 \
+    AGENTOPS_DB_PATH=/data/agentops.db \
+    AGENTOPS_LOG_LEVEL=debug
+
+EXPOSE 4000
+ENTRYPOINT ["/sbin/tini", "--"]
+CMD ["pnpm", "--filter", "@agentops/server", "dev"]

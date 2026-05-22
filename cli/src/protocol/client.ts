@@ -39,7 +39,7 @@ export class LoginError extends Error {
 
 export function buildLoginUrl(serverUrl: string): string {
   const trimmed = serverUrl.replace(/\/+$/, '');
-  return `${trimmed}/api/v1/runner/login`;
+  return `${trimmed}/api/runner/login`;
 }
 
 export async function login(options: LoginOptions): Promise<LoginResponse> {
@@ -65,6 +65,7 @@ export async function login(options: LoginOptions): Promise<LoginResponse> {
       headers: {
         'content-type': 'application/json',
         accept: 'application/json',
+        authorization: `Bearer ${options.loginToken}`,
       },
       body: JSON.stringify(body),
       signal: options.signal,
@@ -94,15 +95,15 @@ export async function login(options: LoginOptions): Promise<LoginResponse> {
     );
   }
 
-  const ok = parsed as Partial<LoginResponse> | null;
-  if (!ok || ok.ok !== true || !ok.runnerToken || !ok.machineId) {
+  const ok = normalizeLoginResponse(parsed);
+  if (!ok || !ok.runnerToken || !ok.machineId) {
     throw new LoginError(
       'Server response is missing runner token or machine id',
       'internal_error',
       response.status,
     );
   }
-  return ok as LoginResponse;
+  return ok;
 }
 
 export function buildWebSocketUrl(
@@ -111,8 +112,38 @@ export function buildWebSocketUrl(
 ): string {
   const url = new URL(serverUrl);
   url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:';
-  // Drop any trailing slash, then append path.
-  url.pathname = url.pathname.replace(/\/+$/, '') + '/api/v1/runner/ws';
-  url.searchParams.set('token', runnerToken);
+  url.pathname = url.pathname.replace(/\/+$/, '') + '/ws/runner';
+  url.searchParams.set('runnerToken', runnerToken);
   return url.toString();
+}
+
+function normalizeLoginResponse(payload: unknown): LoginResponse | null {
+  if (!payload || typeof payload !== 'object') return null;
+  const row = payload as {
+    ok?: boolean;
+    runnerToken?: unknown;
+    machineId?: unknown;
+    displayName?: unknown;
+    serverTime?: unknown;
+    machine?: { id?: unknown; displayName?: unknown };
+  };
+  const runnerToken = typeof row.runnerToken === 'string' ? row.runnerToken : '';
+  const machineId =
+    typeof row.machineId === 'string'
+      ? row.machineId
+      : typeof row.machine?.id === 'string'
+        ? row.machine.id
+        : '';
+  if (!runnerToken || !machineId) return null;
+  return {
+    ok: true,
+    runnerToken,
+    machineId,
+    ...(typeof row.displayName === 'string'
+      ? { displayName: row.displayName }
+      : typeof row.machine?.displayName === 'string'
+        ? { displayName: row.machine.displayName }
+        : {}),
+    ...(typeof row.serverTime === 'string' ? { serverTime: row.serverTime } : {}),
+  };
 }

@@ -15,10 +15,10 @@ describe('normalizeServerUrl', () => {
 describe('buildWebSocketUrl', () => {
   it('converts http(s) to ws(s) and appends the token', () => {
     expect(buildWebSocketUrl('http://example.com/', 'tok')).toBe(
-      'ws://example.com/api/ws?token=tok',
+      'ws://example.com/ws/client?token=tok',
     );
     expect(buildWebSocketUrl('https://example.com', 'tok2')).toBe(
-      'wss://example.com/api/ws?token=tok2',
+      'wss://example.com/ws/client?token=tok2',
     );
   });
 });
@@ -41,17 +41,19 @@ describe('ApiClient', () => {
       captured = { url, init };
       return new Response(
         JSON.stringify({
-          id: 'a1',
-          machineId: 'm1',
-          agentType: 'claude-code',
-          kind: 'detect',
-          status: 'queued',
-          summary: null,
-          createdAt: new Date(0).toISOString(),
-          startedAt: null,
-          finishedAt: null,
+          action: {
+            id: 'a1',
+            machineId: 'm1',
+            agentKind: 'claude-code',
+            type: 'detect',
+            status: 'queued',
+            resultSummary: null,
+            createdAt: new Date(0).toISOString(),
+            startedAt: null,
+            finishedAt: null,
+          },
         }),
-        { status: 200 },
+        { status: 201 },
       );
     }) as unknown as typeof fetch;
 
@@ -63,7 +65,7 @@ describe('ApiClient', () => {
     expect(headers.Authorization).toBe('Bearer tok');
     expect(headers['Content-Type']).toBe('application/json');
     expect(captured!.init!.body).toBe(
-      JSON.stringify({ agentType: 'claude-code', kind: 'detect' }),
+      JSON.stringify({ agentKind: 'claude-code', type: 'detect' }),
     );
   });
 

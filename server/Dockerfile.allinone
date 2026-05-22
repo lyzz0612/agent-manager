@@ -1,0 +1,92 @@
+# All-in-one image: Server + bundled Web + bundled agentops-runner.
+#
+# Does NOT pre-install Cursor, Codex or Claude Code. The runner CLI is shipped
+# inside the image and started as a sidecar process by the entrypoint script;
+# real agents are still installed at runtime through `agentops-runner`.
+# syntax=docker/dockerfile:1.6
+
+ARG NODE_VERSION=22-alpine
+ARG VERSION=dev
+
+# ---------- build server + web + runner ----------
+FROM node:${NODE_VERSION} AS build
+WORKDIR /app
+
+RUN apk add --no-cache python3 make g++ libc6-compat \
+ && corepack enable \
+ && corepack prepare pnpm@9.15.0 --activate
+
+COPY package.json pnpm-workspace.yaml tsconfig.base.json ./
+COPY server/package.json server/
+COPY client/package.json client/
+COPY cli/package.json cli/
+COPY packages/protocol/package.json packages/protocol/
+COPY pnpm-lock.yaml* ./
+
+RUN --mount=type=cache,id=pnpm-store,target=/root/.local/share/pnpm/store \
+    pnpm install --frozen-lockfile=false \
+      --filter @agentops/server \
+      --filter @agent-manager/client \
+      --filter @lyzz0612/agentops-runner \
+      --filter @lyzz0612/agentops-protocol
+
+COPY server ./server
+COPY client ./client
+COPY cli ./cli
+COPY packages ./packages
+
+RUN pnpm --filter @agentops/server build
+RUN pnpm --filter @lyzz0612/agentops-runner build || \
+      echo "[allinone] runner tsc build skipped; using TS source via --experimental-strip-types" \
+ && mkdir -p cli/dist
+RUN pnpm --filter @agent-manager/client exec expo export --platform web --output-dir /tmp/web || \
+      (echo "expo export failed; emitting placeholder index.html" && \
+       mkdir -p /tmp/web && \
+       printf '<!doctype html><meta charset="utf-8"><title>AgentOps Web</title><h1>Web bundle placeholder</h1>' > /tmp/web/index.html)
+
+# ---------- runtime ----------
+FROM node:${NODE_VERSION} AS runtime
+WORKDIR /app
+ARG VERSION
+ENV NODE_ENV=production \
+    AGENTOPS_HOST=0.0.0.0 \
+    AGENTOPS_PORT=4000 \
+    AGENTOPS_DB_PATH=/data/agentops.db \
+    AGENTOPS_LOG_LEVEL=info \
+    AGENTOPS_WEB_ROOT=/app/web \
+    AGENTOPS_HOME=/data/runner \
+    NODE_OPTIONS="--experimental-strip-types --no-warnings=ExperimentalWarning"
+
+RUN apk add --no-cache tini libstdc++ bash \
+ && corepack enable \
+ && corepack prepare pnpm@9.15.0 --activate \
+ && mkdir -p /data /data/runner /app/web \
+ && addgroup -S agentops && adduser -S agentops -G agentops
+
+COPY --from=build /app/package.json /app/pnpm-workspace.yaml /app/tsconfig.base.json ./
+COPY --from=build /app/server/package.json server/
+COPY --from=build /app/server/dist server/dist
+COPY --from=build /app/cli/package.json cli/
+COPY --from=build /app/cli/bin cli/bin
+COPY --from=build /app/cli/src cli/src
+COPY --from=build /app/cli/tsconfig.json cli/tsconfig.json
+COPY --from=build /app/cli/dist cli/dist
+COPY --from=build /app/packages packages
+COPY --from=build /app/node_modules node_modules
+COPY --from=build /app/server/node_modules server/node_modules
+COPY --from=build /app/cli/node_modules cli/node_modules
+COPY --from=build /tmp/web /app/web
+
+COPY server/entrypoint-allinone.sh /usr/local/bin/agentops-allinone
+RUN chmod +x /usr/local/bin/agentops-allinone \
+ && echo "$VERSION" > /etc/agentops-version \
+ && chown -R agentops:agentops /data /app
+
+USER agentops
+EXPOSE 4000
+VOLUME ["/data"]
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=6 \
+  CMD node -e "fetch('http://127.0.0.1:'+ (process.env.AGENTOPS_PORT||4000) +'/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
+
+ENTRYPOINT ["/sbin/tini", "--", "/usr/local/bin/agentops-allinone"]

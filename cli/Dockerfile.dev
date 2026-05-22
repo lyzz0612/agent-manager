@@ -1,0 +1,21 @@
+# Dev image for the runner: workspace + pnpm + tsx so we can re-run the CLI
+# directly from TypeScript sources. Sources are bind-mounted from the host.
+# syntax=docker/dockerfile:1.6
+
+ARG NODE_VERSION=22-alpine
+FROM node:${NODE_VERSION}
+WORKDIR /app
+
+RUN apk add --no-cache python3 make g++ libc6-compat tini bash curl ca-certificates git \
+ && corepack enable \
+ && corepack prepare pnpm@9.15.0 --activate
+
+ENV NODE_ENV=development \
+    AGENTOPS_HOME=/var/agentops \
+    AGENTOPS_DEV=1
+
+# State volume.
+VOLUME ["/var/agentops"]
+
+ENTRYPOINT ["/sbin/tini", "--"]
+CMD ["node", "scripts/dev-runner.mjs", "--inside-container"]

@@ -37,7 +37,7 @@ export type ActionState =
   | 'failed'
   | 'cancelled';
 
-/** HTTP: POST /api/v1/runner/login */
+/** HTTP: POST /api/runner/login */
 export interface LoginRequest {
   protocolVersion: typeof PROTOCOL_VERSION;
   serverUrl: string;

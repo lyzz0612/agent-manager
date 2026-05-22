@@ -118,7 +118,7 @@ async function commandDaemon(): Promise<number> {
   process.once('SIGINT', cleanup);
   process.once('SIGTERM', cleanup);
   await handle.done;
-  return process.exitCode ?? 0;
+  return typeof process.exitCode === 'number' ? process.exitCode : 0;
 }
 
 function commandStatus(): number {

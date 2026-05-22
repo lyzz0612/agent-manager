@@ -9,7 +9,6 @@ import type {
   RunnerOutbound,
   ServerActionRequest,
   ServerAuthFailure,
-  ServerInbound,
 } from '../protocol/types.ts';
 import { PROTOCOL_VERSION } from '../protocol/types.ts';
 import { logger } from '../utils/logger.ts';
@@ -170,24 +169,56 @@ export class DaemonConnection {
     else if (Buffer.isBuffer(data as Buffer)) text = (data as Buffer).toString('utf8');
     else return;
 
-    let parsed: ServerInbound;
+    let parsed: Record<string, unknown>;
     try {
-      parsed = JSON.parse(text) as ServerInbound;
+      parsed = JSON.parse(text) as Record<string, unknown>;
     } catch {
       this.emit('error', new Error('Failed to parse server message'));
       return;
     }
     switch (parsed.type) {
       case 'server.action':
-        this.emit('action', parsed);
+        this.emit('action', parsed as unknown as ServerActionRequest);
+        break;
+      case 'server.command.action':
+        this.emit('action', {
+          type: 'server.action',
+          actionId: String(parsed.actionId ?? ''),
+          agentType: parsed.agentKind as ServerActionRequest['agentType'],
+          actionType: parsed.actionType as ServerActionRequest['actionType'],
+          args:
+            typeof parsed.payload === 'object' && parsed.payload !== null
+              ? (parsed.payload as Record<string, unknown>)
+              : undefined,
+        });
         break;
       case 'server.auth_failure':
         this.staleCredentials = true;
-        this.emit('authFailure', parsed);
+        this.emit('authFailure', parsed as unknown as ServerAuthFailure);
         this.stop();
         logger.warn(
           `Server rejected runner credentials (${parsed.reason}): ${parsed.message}. Please re-run 'agentops-runner login'.`,
         );
+        break;
+      case 'server.error':
+        if (parsed.code === 'unauthorized' || parsed.code === 'machine_deleted') {
+          const failure: ServerAuthFailure = {
+            type: 'server.auth_failure',
+            reason: parsed.code === 'machine_deleted' ? 'machine_deleted' : 'invalid_token',
+            message: String(parsed.message ?? 'authentication failed'),
+          };
+          this.staleCredentials = true;
+          this.emit('authFailure', failure);
+          this.stop();
+          logger.warn(
+            `Server rejected runner credentials (${failure.reason}): ${failure.message}. Please re-run 'agentops-runner login'.`,
+          );
+        } else {
+          this.emit('error', new Error(String(parsed.message ?? 'server error')));
+        }
+        break;
+      case 'server.welcome':
+        // informational; the server already marks this runner online on attach
         break;
       case 'server.ack':
         // ignored in v1

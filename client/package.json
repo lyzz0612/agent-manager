@@ -5,6 +5,7 @@
   "description": "Web/Android client for the Agent Manager (Expo + React Native Web).",
   "main": "index.js",
   "scripts": {
+    "dev": "expo start --web",
     "start": "expo start",
     "android": "expo run:android",
     "web": "expo start --web",
