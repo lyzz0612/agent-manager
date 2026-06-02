@@ -1,0 +1,18 @@
+[package]
+name = "agent-manager-server"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+app-core = { path = "../../crates/app-core" }
+axum.workspace = true
+axum-extra.workspace = true
+host-model = { path = "../../crates/host-model" }
+serde.workspace = true
+tokio.workspace = true
+tower-http.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true

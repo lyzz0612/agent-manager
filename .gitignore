@@ -1,1 +1,9 @@
 node_modules/
+dist/
+target/
+.env
+.env.local
+apps/web/node_modules/
+apps/web/dist/
+.local/
+*.tsbuildinfo

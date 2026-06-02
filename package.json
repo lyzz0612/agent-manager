@@ -1,0 +1,17 @@
+{
+  "name": "agent-manager",
+  "private": true,
+  "version": "0.1.0",
+  "workspaces": [
+    "apps/web"
+  ],
+  "scripts": {
+    "dev:server": "cargo run -p agent-manager-server",
+    "dev": "scripts/dev.bat",
+    "dev:web": "npm --workspace apps/web run dev",
+    "check:web": "npm --workspace apps/web run typecheck",
+    "build:web": "npm --workspace apps/web run build",
+    "build": "npm run build:web",
+    "preview:web": "npm --workspace apps/web run preview"
+  }
+}

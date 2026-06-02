@@ -1,0 +1,29 @@
+[workspace]
+members = [
+  "apps/server",
+  "crates/app-core",
+  "crates/cursor-provider",
+  "crates/host-fs",
+  "crates/host-model",
+  "crates/host-proc",
+]
+resolver = "2"
+
+[workspace.package]
+edition = "2021"
+license = "MIT"
+publish = false
+version = "0.1.0"
+
+[workspace.dependencies]
+anyhow = "1"
+axum = { version = "0.7", features = ["macros"] }
+axum-extra = { version = "0.9", features = ["cookie"] }
+regex = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["full"] }
+tower-http = { version = "0.6", features = ["fs", "trace"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+uuid = { version = "1", features = ["serde", "v4"] }

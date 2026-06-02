@@ -1,0 +1,9 @@
+node_modules
+apps/web/node_modules
+apps/web/dist
+target
+.git
+.cursor
+README.md
+docs
+openspec
