@@ -138,6 +138,30 @@ pub struct RuntimeActionResult {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PluginSummary {
+    pub id: String,
+    pub name: String,
+    pub installed: bool,
+    pub version: Option<String>,
+    pub install_dir: String,
+    pub data_dir: String,
+    pub install_supported: bool,
+    pub install_command: Option<String>,
+    pub official_url: String,
+    pub default_workspace: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PluginDetail {
+    pub id: String,
+    pub name: String,
+    pub installed: bool,
+    pub providers_listing: String,
+    pub agents_listing: String,
+    pub daemon_pair_json: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ActionMessage {
     pub message: String,
 }

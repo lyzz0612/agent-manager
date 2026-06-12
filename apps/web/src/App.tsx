@@ -63,6 +63,28 @@ type AgentSummary = {
   install_command: string | null;
 };
 
+type PluginSummary = {
+  id: string;
+  name: string;
+  installed: boolean;
+  version: string | null;
+  install_dir: string;
+  data_dir: string;
+  install_supported: boolean;
+  install_command: string | null;
+  official_url: string;
+  default_workspace: string;
+};
+
+type PluginDetail = {
+  id: string;
+  name: string;
+  installed: boolean;
+  providers_listing: string;
+  agents_listing: string;
+  daemon_pair_json: string;
+};
+
 type SkillSummary = {
   id: string;
   name: string;
@@ -111,13 +133,14 @@ type AppUpdateResult = {
   restart_required: boolean;
 };
 
-type PageId = "overview" | "agents" | "skills" | "settings";
+type PageId = "overview" | "agents" | "plugins" | "skills" | "settings";
 
 type SkillScope = "common" | string;
 
 const NAV_ITEMS: { id: PageId; label: string }[] = [
   { id: "overview", label: "概览" },
   { id: "agents", label: "Agents" },
+  { id: "plugins", label: "Plugins" },
   { id: "skills", label: "Skills" },
   { id: "settings", label: "设置" },
 ];
@@ -125,6 +148,7 @@ const NAV_ITEMS: { id: PageId; label: string }[] = [
 const PAGE_TITLES: Record<PageId, string> = {
   overview: "概览",
   agents: "Agents",
+  plugins: "Plugins",
   skills: "Skills",
   settings: "设置",
 };
@@ -139,12 +163,12 @@ const CURSOR_CLI_INSTALL_COMMAND_WINDOWS =
   "irm 'https://cursor.com/install?win32=true' | iex";
 const CURSOR_CLI_INSTALL_COMMAND_UNIX = "curl https://cursor.com/install -fsS | bash";
 
-function resolveInstallCommand(agent: AgentSummary): string {
-  if (agent.install_command) {
-    return agent.install_command;
+function resolveInstallCommand(item: { id: string; install_command: string | null }): string {
+  if (item.install_command) {
+    return item.install_command;
   }
 
-  if (agent.id !== "cursor") {
+  if (item.id !== "cursor") {
     return "";
   }
 
@@ -191,7 +215,10 @@ export default function App() {
 
   const [appStatus, setAppStatus] = useState<AppStatus | null>(null);
   const [agents, setAgents] = useState<AgentSummary[]>([]);
+  const [plugins, setPlugins] = useState<PluginSummary[]>([]);
   const [selectedAgentId, setSelectedAgentId] = useState<string | null>(null);
+  const [selectedPluginId, setSelectedPluginId] = useState<string | null>(null);
+  const [pluginDetail, setPluginDetail] = useState<PluginDetail | null>(null);
   const [accountStatus, setAccountStatus] = useState<CursorAccountStatus | null>(null);
   const [authFlow, setAuthFlow] = useState<CursorAuthFlowStatus | null>(null);
   const [knownConfig, setKnownConfig] = useState<KnownConfig>(defaultKnownConfig);
@@ -228,12 +255,20 @@ export default function App() {
     [agents, selectedAgentId],
   );
 
+  const selectedPlugin = useMemo(
+    () => plugins.find((plugin) => plugin.id === selectedPluginId) ?? null,
+    [plugins, selectedPluginId],
+  );
+
   const mainTitle = useMemo(() => {
     if (activePage === "agents" && selectedAgent) {
       return selectedAgent.name;
     }
+    if (activePage === "plugins" && selectedPlugin) {
+      return selectedPlugin.name;
+    }
     return PAGE_TITLES[activePage];
-  }, [activePage, selectedAgent]);
+  }, [activePage, selectedAgent, selectedPlugin]);
 
   useEffect(() => {
     void bootstrap();
@@ -244,6 +279,22 @@ export default function App() {
       setSelectedAgentId(null);
     }
   }, [activePage]);
+
+  useEffect(() => {
+    if (activePage !== "plugins") {
+      setSelectedPluginId(null);
+      setPluginDetail(null);
+    }
+  }, [activePage]);
+
+  useEffect(() => {
+    if (!authenticated || !selectedPluginId) {
+      setPluginDetail(null);
+      return;
+    }
+
+    void loadPluginDetail(selectedPluginId);
+  }, [authenticated, selectedPluginId]);
 
   useEffect(() => {
     if (!authenticated || !selectedSkillFolderId) {
@@ -292,9 +343,10 @@ export default function App() {
   }
 
   async function loadDashboard() {
-    const [nextAgents, account, flow, nextKnownConfig, nextRawConfig, nextSkills] =
+    const [nextAgents, nextPlugins, account, flow, nextKnownConfig, nextRawConfig, nextSkills] =
       await Promise.all([
         requestJson<AgentSummary[]>("/api/agents"),
+        requestJson<PluginSummary[]>("/api/plugins"),
         requestJson<CursorAccountStatus>("/api/cursor/account"),
         requestJson<CursorAuthFlowStatus>("/api/cursor/auth-flow"),
         requestJson<KnownConfig>("/api/profile/known-config"),
@@ -303,6 +355,7 @@ export default function App() {
       ]);
 
     setAgents(nextAgents);
+    setPlugins(nextPlugins);
     setAccountStatus(account);
     setAuthFlow(flow);
     setKnownConfig(nextKnownConfig);
@@ -313,6 +366,13 @@ export default function App() {
 
     setSelectedAgentId((current) => {
       if (current && nextAgents.some((agent) => agent.id === current && agent.installed)) {
+        return current;
+      }
+      return null;
+    });
+
+    setSelectedPluginId((current) => {
+      if (current && nextPlugins.some((plugin) => plugin.id === current && plugin.installed)) {
         return current;
       }
       return null;
@@ -477,6 +537,75 @@ export default function App() {
 
   function backToAgentList() {
     setSelectedAgentId(null);
+  }
+
+  async function handlePluginAction(
+    pluginId: string,
+    action: "install" | "upgrade" | "uninstall",
+    pluginName?: string,
+  ) {
+    if (
+      action === "uninstall" &&
+      !window.confirm(`确认卸载 ${pluginName ?? pluginId} 吗？将移除 CLI，但保留用户目录数据。`)
+    ) {
+      return;
+    }
+
+    try {
+      const result = await requestJson<RuntimeActionResult>(
+        `/api/plugins/${encodeURIComponent(pluginId)}/${action}`,
+        { method: "POST" },
+      );
+      setPlugins((current) =>
+        current.map((plugin) =>
+          plugin.id === pluginId
+            ? {
+                ...plugin,
+                installed: result.installed,
+                version: result.version,
+                install_dir: result.install_dir,
+                data_dir: result.data_dir,
+              }
+            : plugin,
+        ),
+      );
+      if (action === "uninstall" && !result.installed) {
+        setSelectedPluginId(null);
+      }
+      if (action === "install" && result.installed) {
+        setSelectedPluginId(pluginId);
+      }
+      if (selectedPluginId === pluginId) {
+        void loadPluginDetail(pluginId);
+      }
+      notify("success", result.message);
+    } catch (error) {
+      notify("error", getErrorMessage(error));
+    }
+  }
+
+  function openPluginDetail(pluginId: string) {
+    const plugin = plugins.find((item) => item.id === pluginId);
+    if (plugin?.installed) {
+      setSelectedPluginId(pluginId);
+    }
+  }
+
+  function backToPluginList() {
+    setSelectedPluginId(null);
+    setPluginDetail(null);
+  }
+
+  async function loadPluginDetail(pluginId: string) {
+    try {
+      const detail = await requestJson<PluginDetail>(
+        `/api/plugins/${encodeURIComponent(pluginId)}`,
+      );
+      setPluginDetail(detail);
+    } catch (error) {
+      setPluginDetail(null);
+      notify("error", getErrorMessage(error));
+    }
   }
 
   function switchSkillScope(nextScope: SkillScope) {
@@ -704,6 +833,19 @@ export default function App() {
                   />
                 ))}
             </Panel>
+            <Panel title="Plugins 摘要">
+              {plugins.map((plugin) => (
+                <InfoRow
+                  key={plugin.id}
+                  label={plugin.name}
+                  value={
+                    plugin.installed
+                      ? "已安装"
+                      : "未安装"
+                  }
+                />
+              ))}
+            </Panel>
           </>
         ) : null}
 
@@ -819,6 +961,114 @@ export default function App() {
                       )}
                     </div>
                     {agent.installed ? (
+                      <p className="agent-card__hint muted">点击卡片进入详情</p>
+                    ) : null}
+                  </article>
+                ))}
+              </div>
+            </Panel>
+          )
+        ) : null}
+
+        {activePage === "plugins" ? (
+          selectedPlugin && pluginDetail ? (
+            <PluginDetailView
+              detail={pluginDetail}
+              plugin={selectedPlugin}
+              onBack={backToPluginList}
+              onAction={handlePluginAction}
+            />
+          ) : selectedPlugin ? (
+            <div className="screen-message">正在加载插件详情...</div>
+          ) : (
+            <Panel title="支持的 Plugins">
+              <div className="agent-grid">
+                {plugins.map((plugin) => (
+                  <article
+                    key={plugin.id}
+                    className={
+                      plugin.installed ? "agent-card agent-card--clickable" : "agent-card"
+                    }
+                    onClick={plugin.installed ? () => openPluginDetail(plugin.id) : undefined}
+                    onKeyDown={
+                      plugin.installed
+                        ? (event) => {
+                            if (event.key === "Enter" || event.key === " ") {
+                              event.preventDefault();
+                              openPluginDetail(plugin.id);
+                            }
+                          }
+                        : undefined
+                    }
+                    role={plugin.installed ? "button" : undefined}
+                    tabIndex={plugin.installed ? 0 : undefined}
+                  >
+                    <div className="agent-card__header">
+                      <h3 className="agent-card__name">{plugin.name}</h3>
+                      <span
+                        className={
+                          plugin.installed
+                            ? "agent-card__badge agent-card__badge--installed"
+                            : "agent-card__badge"
+                        }
+                      >
+                        {plugin.installed ? "已安装" : "未安装"}
+                      </span>
+                    </div>
+                    {plugin.installed ? (
+                      <dl className="agent-card__meta">
+                        <div>
+                          <dt>数据目录</dt>
+                          <dd className="agent-card__path">{plugin.data_dir}</dd>
+                        </div>
+                      </dl>
+                    ) : (
+                      <div className="agent-card__install-cmd">
+                        <p className="agent-card__install-label">安装命令</p>
+                        <code>{resolveInstallCommand(plugin)}</code>
+                      </div>
+                    )}
+                    <div className="actions agent-card__actions">
+                      {plugin.installed ? (
+                        <>
+                          <button
+                            className="secondary"
+                            disabled={!plugin.install_supported}
+                            onClick={(event) => {
+                              event.stopPropagation();
+                              void handlePluginAction(plugin.id, "upgrade", plugin.name);
+                            }}
+                            type="button"
+                          >
+                            升级
+                          </button>
+                          <button
+                            className="danger"
+                            disabled={!plugin.install_supported}
+                            onClick={(event) => {
+                              event.stopPropagation();
+                              void handlePluginAction(plugin.id, "uninstall", plugin.name);
+                            }}
+                            type="button"
+                          >
+                            卸载
+                          </button>
+                        </>
+                      ) : (
+                        <button
+                          className="primary"
+                          disabled={!plugin.install_supported}
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            void handlePluginAction(plugin.id, "install", plugin.name);
+                          }}
+                          type="button"
+                        >
+                          安装
+                        </button>
+                      )}
+                    </div>
+                    {plugin.installed ? (
                       <p className="agent-card__hint muted">点击卡片进入详情</p>
                     ) : null}
                   </article>
@@ -1222,6 +1472,69 @@ function AgentDetailView(props: {
             </Panel>
           </>
         ) : null}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function PluginDetailView(props: {
+  plugin: PluginSummary;
+  detail: PluginDetail;
+  onBack: () => void;
+  onAction: (
+    pluginId: string,
+    action: "install" | "upgrade" | "uninstall",
+    pluginName?: string,
+  ) => Promise<void>;
+}) {
+  const { plugin, detail, onBack, onAction } = props;
+
+  return (
+    <div className="agent-detail">
+      <div className="detail-header agent-detail-header">
+        <button className="ghost" onClick={onBack} type="button">
+          ← 返回列表
+        </button>
+        <h3>{plugin.name}</h3>
+      </div>
+
+      <div className="detail-tab-content">
+        <Panel title="Providers">
+          <p className="code-meta">
+            <code>paseo provider ls</code>
+          </p>
+          <pre className="cli-output">{detail.providers_listing || "（无输出）"}</pre>
+        </Panel>
+        <Panel title="Listing agents">
+          <p className="code-meta">
+            <code>paseo ls</code>
+          </p>
+          <pre className="cli-output">{detail.agents_listing || "（无输出）"}</pre>
+        </Panel>
+        <Panel title="Pairing">
+          <p className="code-meta">
+            <code>paseo daemon pair --json</code>
+          </p>
+          <pre className="cli-output">{detail.daemon_pair_json || "（无输出）"}</pre>
+        </Panel>
+        <div className="actions">
+          <button
+            className="secondary"
+            disabled={!plugin.install_supported}
+            onClick={() => void onAction(plugin.id, "upgrade", plugin.name)}
+            type="button"
+          >
+            升级
+          </button>
+          <button
+            className="danger"
+            disabled={!plugin.install_supported}
+            onClick={() => void onAction(plugin.id, "uninstall", plugin.name)}
+            type="button"
+          >
+            卸载
+          </button>
         </div>
       </div>
     </div>

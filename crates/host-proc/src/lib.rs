@@ -2,6 +2,7 @@ use anyhow::{Context, Result};
 use std::collections::BTreeMap;
 use std::path::Path;
 use std::process::Command;
+use std::time::Duration;
 
 #[derive(Debug, Clone)]
 pub struct CommandCapture {
@@ -37,12 +38,47 @@ pub fn run_command_capture_with_env(
     working_dir: &Path,
     envs: &BTreeMap<String, String>,
 ) -> Result<CommandCapture> {
-    let output = Command::new(program)
-        .args(args)
-        .current_dir(working_dir)
-        .envs(envs)
-        .output()
-        .with_context(|| format!("failed to start command: {program}"))?;
+    run_command_capture_with_env_timeout(program, args, working_dir, envs, None)
+}
+
+pub fn run_command_capture_with_env_timeout(
+    program: &str,
+    args: &[&str],
+    working_dir: &Path,
+    envs: &BTreeMap<String, String>,
+    timeout: Option<Duration>,
+) -> Result<CommandCapture> {
+    let program = program.to_string();
+    let program_for_error = program.clone();
+    let args = args.iter().map(|arg| arg.to_string()).collect::<Vec<_>>();
+    let working_dir = working_dir.to_path_buf();
+    let envs = envs.clone();
+
+    let (sender, receiver) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let output = Command::new(&program)
+            .args(&args)
+            .current_dir(&working_dir)
+            .envs(&envs)
+            .output();
+        let _ = sender.send(output);
+    });
+
+    let output = match timeout {
+        Some(limit) => receiver
+            .recv_timeout(limit)
+            .map_err(|_| {
+                anyhow::anyhow!(
+                    "command timed out after {} ms: {program_for_error}",
+                    limit.as_millis()
+                )
+            })?
+            .with_context(|| format!("failed to start command: {program_for_error}"))?,
+        None => receiver
+            .recv()
+            .map_err(|_| anyhow::anyhow!("command thread exited before returning output"))?
+            .with_context(|| format!("failed to start command: {program_for_error}"))?,
+    };
 
     Ok(CommandCapture {
         success: output.status.success(),

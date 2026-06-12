@@ -4,9 +4,11 @@ use anyhow::{bail, Context, Result};
 use cursor_provider::CursorProvider;
 use host_model::{
     AgentSummary, AppSettings, AppStatus, AppUpdateResult, CursorAccountStatus,
-    CursorAuthFlowStatus, CursorRuntimeStatus, KnownConfig, RawConfigDocument, RawConfigPreview,
-    RuntimeActionResult, SkillDocument, SkillFileSummary, SkillSummary,
+    CursorAuthFlowStatus, CursorRuntimeStatus, KnownConfig, PluginDetail, PluginSummary,
+    RawConfigDocument, RawConfigPreview, RuntimeActionResult, SkillDocument, SkillFileSummary,
+    SkillSummary,
 };
+use paseo_provider::PaseoProvider;
 use std::collections::HashSet;
 use std::env;
 use std::fs;
@@ -167,6 +169,26 @@ impl AppState {
         self.provider().uninstall_agent(agent_id)
     }
 
+    pub fn list_plugins(&self) -> Vec<PluginSummary> {
+        self.paseo_provider().list_plugins()
+    }
+
+    pub fn plugin_detail(&self, plugin_id: &str) -> Result<PluginDetail> {
+        self.paseo_provider().plugin_detail(plugin_id)
+    }
+
+    pub fn install_plugin(&self, plugin_id: &str) -> Result<RuntimeActionResult> {
+        self.paseo_provider().install_plugin(plugin_id)
+    }
+
+    pub fn upgrade_plugin(&self, plugin_id: &str) -> Result<RuntimeActionResult> {
+        self.paseo_provider().upgrade_plugin(plugin_id)
+    }
+
+    pub fn uninstall_plugin(&self, plugin_id: &str) -> Result<RuntimeActionResult> {
+        self.paseo_provider().uninstall_plugin(plugin_id)
+    }
+
     pub fn cursor_runtime_status(&self) -> CursorRuntimeStatus {
         self.provider().runtime_status()
     }
@@ -225,6 +247,10 @@ impl AppState {
 
     fn provider(&self) -> CursorProvider {
         CursorProvider::new()
+    }
+
+    fn paseo_provider(&self) -> PaseoProvider {
+        PaseoProvider::new()
     }
 }
 

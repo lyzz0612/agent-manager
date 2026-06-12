@@ -41,6 +41,7 @@ dependencies = [
  "cursor-provider",
  "host-model",
  "host-proc",
+ "paseo-provider",
  "uuid",
 ]
 
@@ -527,6 +528,17 @@ dependencies = [
  "redox_syscall",
  "smallvec",
  "windows-link",
+]
+
+[[package]]
+name = "paseo-provider"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "host-fs",
+ "host-model",
+ "host-proc",
+ "serde_json",
 ]
 
 [[package]]

@@ -9,8 +9,9 @@ use axum::{
 use host_model::{
     ActionMessage, AgentSummary, AppSettings, AppStatus, AppUpdateResult, AuthLoginRequest,
     AuthLoginResponse, CursorAccountStatus, CursorAuthFlowStatus, CursorRuntimeStatus,
-    KnownConfig, RawConfigDocument, RawConfigPreview, RawConfigUpdateRequest, RuntimeActionResult,
-    SessionStatus, SkillDocument, SkillFileSummary, SkillSummary, SkillUpdateRequest,
+    KnownConfig, PluginDetail, PluginSummary, RawConfigDocument, RawConfigPreview, RawConfigUpdateRequest,
+    RuntimeActionResult, SessionStatus, SkillDocument, SkillFileSummary, SkillSummary,
+    SkillUpdateRequest,
 };
 use serde_json::json;
 use std::sync::Arc;
@@ -73,6 +74,11 @@ async fn main() -> anyhow::Result<()> {
         .route("/agents/:id/install", post(install_agent))
         .route("/agents/:id/upgrade", post(upgrade_agent))
         .route("/agents/:id/uninstall", post(uninstall_agent))
+        .route("/plugins", get(list_plugins))
+        .route("/plugins/:id", get(get_plugin))
+        .route("/plugins/:id/install", post(install_plugin))
+        .route("/plugins/:id/upgrade", post(upgrade_plugin))
+        .route("/plugins/:id/uninstall", post(uninstall_plugin))
         .route("/cursor/runtime", get(runtime_status))
         .route("/cursor/runtime/install", post(install_runtime))
         .route("/cursor/runtime/upgrade", post(upgrade_runtime))
@@ -212,6 +218,50 @@ async fn uninstall_agent(
 ) -> Result<Json<RuntimeActionResult>, ApiError> {
     ensure_authenticated(&state, &headers)?;
     Ok(Json(state.uninstall_agent(&agent_id)?))
+}
+
+async fn list_plugins(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Result<Json<Vec<PluginSummary>>, ApiError> {
+    ensure_authenticated(&state, &headers)?;
+    Ok(Json(state.list_plugins()))
+}
+
+async fn get_plugin(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(plugin_id): Path<String>,
+) -> Result<Json<PluginDetail>, ApiError> {
+    ensure_authenticated(&state, &headers)?;
+    Ok(Json(state.plugin_detail(&plugin_id)?))
+}
+
+async fn install_plugin(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(plugin_id): Path<String>,
+) -> Result<Json<RuntimeActionResult>, ApiError> {
+    ensure_authenticated(&state, &headers)?;
+    Ok(Json(state.install_plugin(&plugin_id)?))
+}
+
+async fn upgrade_plugin(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(plugin_id): Path<String>,
+) -> Result<Json<RuntimeActionResult>, ApiError> {
+    ensure_authenticated(&state, &headers)?;
+    Ok(Json(state.upgrade_plugin(&plugin_id)?))
+}
+
+async fn uninstall_plugin(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(plugin_id): Path<String>,
+) -> Result<Json<RuntimeActionResult>, ApiError> {
+    ensure_authenticated(&state, &headers)?;
+    Ok(Json(state.uninstall_plugin(&plugin_id)?))
 }
 
 async fn runtime_status(

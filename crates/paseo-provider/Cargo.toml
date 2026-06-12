@@ -1,5 +1,5 @@
 [package]
-name = "app-core"
+name = "paseo-provider"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -7,8 +7,7 @@ publish.workspace = true
 
 [dependencies]
 anyhow.workspace = true
-cursor-provider = { path = "../cursor-provider" }
+host-fs = { path = "../host-fs" }
 host-model = { path = "../host-model" }
 host-proc = { path = "../host-proc" }
-paseo-provider = { path = "../paseo-provider" }
-uuid.workspace = true
+serde_json.workspace = true

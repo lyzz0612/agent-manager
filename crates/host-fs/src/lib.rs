@@ -20,6 +20,50 @@ pub const SUPPORTED_AGENTS: &[AgentDefinition] = &[AgentDefinition {
     install_supported: true,
 }];
 
+#[derive(Debug, Clone, Copy)]
+pub struct PluginDefinition {
+    pub id: &'static str,
+    pub name: &'static str,
+    pub install_supported: bool,
+    pub official_url: &'static str,
+    pub install_command: &'static str,
+    pub default_workspace: &'static str,
+}
+
+pub const PASEO_PLUGIN_ID: &str = "paseo";
+pub const PASEO_OFFICIAL_RELAY_ENDPOINT: &str = "relay.paseo.sh:443";
+pub const PASEO_DEFAULT_WORKSPACE: &str = "/workspaces/default";
+
+/// Phase 1 支持的插件列表；扩展时在此注册即可。
+pub const SUPPORTED_PLUGINS: &[PluginDefinition] = &[PluginDefinition {
+    id: PASEO_PLUGIN_ID,
+    name: "Paseo",
+    install_supported: true,
+    official_url: "https://paseo.sh/docs",
+    install_command: "npm install -g @getpaseo/cli",
+    default_workspace: PASEO_DEFAULT_WORKSPACE,
+}];
+
+/// Paseo 用户数据目录 → `~/.paseo`。
+pub fn plugin_home_dir(home: &Path, plugin_id: &str) -> PathBuf {
+    if plugin_id == PASEO_PLUGIN_ID {
+        home.join(".paseo")
+    } else {
+        home.join(format!(".{plugin_id}"))
+    }
+}
+
+pub fn plugin_config_path(home: &Path, plugin_id: &str) -> PathBuf {
+    plugin_home_dir(home, plugin_id).join("config.json")
+}
+
+pub fn find_plugin_definition(plugin_id: &str) -> Result<&'static PluginDefinition> {
+    SUPPORTED_PLUGINS
+        .iter()
+        .find(|definition| definition.id == plugin_id)
+        .ok_or_else(|| anyhow!("未知插件: {plugin_id}"))
+}
+
 /// 解析用户主目录（`~`），兼容 Linux/macOS 与 Windows。
 pub fn user_home_dir() -> Result<PathBuf> {
     if let Ok(home) = env::var("HOME") {

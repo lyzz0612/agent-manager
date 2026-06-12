@@ -170,6 +170,16 @@ textarea {
   line-height: 1.6;
 }
 
+.external-link {
+  color: #7dd3fc;
+  font-size: 15px;
+  word-break: break-all;
+}
+
+.external-link:hover {
+  color: #bae6fd;
+}
+
 .screen-message {
   min-height: 100vh;
   display: grid;
@@ -662,6 +672,21 @@ textarea {
 }
 
 .update-log pre {
+  margin: 0;
+  max-height: 360px;
+  overflow: auto;
+  padding: 14px 16px;
+  border: 1px solid rgba(148, 163, 184, 0.16);
+  border-radius: 10px;
+  background: rgba(2, 6, 23, 0.55);
+  color: #c7d9f5;
+  font-size: 13px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.cli-output {
   margin: 0;
   max-height: 360px;
   overflow: auto;
