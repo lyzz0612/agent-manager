@@ -156,6 +156,7 @@ pub struct PluginDetail {
     pub id: String,
     pub name: String,
     pub installed: bool,
+    pub daemon_status: String,
     pub providers_listing: String,
     pub agents_listing: String,
     pub daemon_pair_json: String,
@@ -189,4 +190,16 @@ pub struct AppUpdateResult {
     pub version: String,
     pub git_commit: Option<String>,
     pub restart_required: bool,
+    #[serde(default)]
+    pub started: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AppUpdateStatus {
+    pub active: bool,
+    pub phase: String,
+    pub message: String,
+    pub output: String,
+    pub version: String,
+    pub git_commit: Option<String>,
 }

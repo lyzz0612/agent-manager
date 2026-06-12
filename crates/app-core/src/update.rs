@@ -1,9 +1,53 @@
 use crate::{read_version, AppConfig};
 use anyhow::{anyhow, Context, Result};
-use host_model::{AppSettings, AppUpdateResult};
+use host_model::{AppSettings, AppUpdateResult, AppUpdateStatus};
 use host_proc::run_command_capture;
+use serde::{Deserialize, Serialize};
 use std::fmt::Write as _;
-use std::path::Path;
+use std::fs;
+use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
+use std::thread;
+use std::time::Duration;
+
+const UPDATE_WORKER_FLAG: &str = "--update-worker";
+const UPDATE_PARENT_PID_FLAG: &str = "--parent-pid";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BuildProfile {
+    Debug,
+    Release,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct UpdateJobState {
+    phase: String,
+    message: String,
+    output: String,
+    version: String,
+    git_commit: Option<String>,
+}
+
+struct InnerUpdateResult {
+    success: bool,
+    message: String,
+    output: String,
+    version: String,
+    git_commit: Option<String>,
+    rolled_back: bool,
+}
+
+pub fn parse_update_worker_parent_pid(args: &[String]) -> Option<u32> {
+    if !args.iter().any(|arg| arg == UPDATE_WORKER_FLAG) {
+        return None;
+    }
+
+    let index = args
+        .iter()
+        .position(|arg| arg == UPDATE_PARENT_PID_FLAG)?;
+    let pid = args.get(index + 1)?.parse().ok()?;
+    Some(pid)
+}
 
 pub fn app_settings(config: &AppConfig) -> AppSettings {
     let git = read_git_state(&config.repo_root, false).ok();
@@ -42,13 +86,36 @@ pub fn check_for_updates(config: &AppConfig) -> Result<AppSettings> {
     })
 }
 
-pub fn pull_and_build(config: &AppConfig) -> Result<AppUpdateResult> {
+pub fn update_job_status(config: &AppConfig) -> AppUpdateStatus {
+    let Some(state) = read_job_state(config) else {
+        return idle_update_status(config);
+    };
+
+    let active = matches!(state.phase.as_str(), "running" | "restarting");
+
+    AppUpdateStatus {
+        active,
+        phase: state.phase,
+        message: state.message,
+        output: state.output,
+        version: state.version,
+        git_commit: state.git_commit,
+    }
+}
+
+pub fn spawn_background_update(config: &AppConfig) -> Result<AppUpdateResult> {
+    let current = update_job_status(config);
+    if current.active {
+        return Err(anyhow!("已有更新任务正在执行，请等待完成后再试。"));
+    }
+
     let git = read_git_state(&config.repo_root, true)
         .context("failed to inspect repository before update")?;
 
     if git.behind_commits == 0 {
         return Ok(AppUpdateResult {
             success: true,
+            started: false,
             message: "当前已是最新版本，无需拉取。".to_string(),
             output: String::new(),
             version: config.version.clone(),
@@ -57,13 +124,135 @@ pub fn pull_and_build(config: &AppConfig) -> Result<AppUpdateResult> {
         });
     }
 
+    ensure_clean_working_tree(&config.repo_root)?;
+
+    let parent_pid = std::process::id();
+    let exe = std::env::current_exe().context("failed to resolve current executable")?;
+
+    write_job_state(
+        config,
+        &UpdateJobState {
+            phase: "running".to_string(),
+            message: "更新任务已在后台启动。".to_string(),
+            output: String::new(),
+            version: config.version.clone(),
+            git_commit: Some(git.commit),
+        },
+    )?;
+
+    spawn_detached_worker(&exe, parent_pid, &config.repo_root)?;
+
+    Ok(AppUpdateResult {
+        success: true,
+        started: true,
+        message: "更新已在后台启动，完成后将自动重启服务。".to_string(),
+        output: String::new(),
+        version: config.version.clone(),
+        git_commit: Some(git.commit),
+        restart_required: false,
+    })
+}
+
+pub fn run_update_worker(config: &AppConfig, parent_pid: u32) -> Result<()> {
+    let profile = detect_build_profile();
+    let result = pull_and_build_inner(config, profile);
+
+    match result {
+        Ok(inner) if inner.success => {
+            write_job_state(
+                config,
+                &UpdateJobState {
+                    phase: "restarting".to_string(),
+                    message: "构建完成，正在自动重启服务…".to_string(),
+                    output: inner.output.clone(),
+                    version: inner.version.clone(),
+                    git_commit: inner.git_commit.clone(),
+                },
+            )?;
+
+            if let Err(error) = restart_server(config, parent_pid) {
+                write_job_state(
+                    config,
+                    &UpdateJobState {
+                        phase: "failed".to_string(),
+                        message: format!("构建成功，但自动重启失败：{error}"),
+                        output: inner.output,
+                        version: inner.version,
+                        git_commit: inner.git_commit,
+                    },
+                )?;
+                return Err(error);
+            }
+
+            write_job_state(
+                config,
+                &UpdateJobState {
+                    phase: "success".to_string(),
+                    message: "更新完成，服务已自动重启。".to_string(),
+                    output: inner.output,
+                    version: inner.version,
+                    git_commit: inner.git_commit,
+                },
+            )?;
+            Ok(())
+        }
+        Ok(inner) => {
+            write_job_state(
+                config,
+                &UpdateJobState {
+                    phase: "failed".to_string(),
+                    message: inner.message,
+                    output: inner.output,
+                    version: inner.version,
+                    git_commit: inner.git_commit,
+                },
+            )?;
+            Ok(())
+        }
+        Err(error) => {
+            write_job_state(
+                config,
+                &UpdateJobState {
+                    phase: "failed".to_string(),
+                    message: error.to_string(),
+                    output: error.to_string(),
+                    version: config.version.clone(),
+                    git_commit: None,
+                },
+            )?;
+            Err(error)
+        }
+    }
+}
+
+fn pull_and_build_inner(config: &AppConfig, profile: BuildProfile) -> Result<InnerUpdateResult> {
+    let git = read_git_state(&config.repo_root, true)
+        .context("failed to inspect repository before update")?;
+
+    if git.behind_commits == 0 {
+        return Ok(InnerUpdateResult {
+            success: true,
+            message: "当前已是最新版本，无需拉取。".to_string(),
+            output: String::new(),
+            version: config.version.clone(),
+            git_commit: Some(git.commit),
+            rolled_back: false,
+        });
+    }
+
     let upstream = git
         .upstream_ref
         .clone()
         .ok_or_else(|| anyhow!("无法确定远程跟踪分支"))?;
 
+    ensure_clean_working_tree(&config.repo_root)?;
+
+    let baseline_commit = git.commit_full.clone();
+    write_update_baseline(config, &baseline_commit)?;
+
     let mut output = String::new();
     let mut success = true;
+    let mut pulled = false;
 
     append_step(
         &mut output,
@@ -71,6 +260,7 @@ pub fn pull_and_build(config: &AppConfig) -> Result<AppUpdateResult> {
         "git pull",
         run_git_capture(&config.repo_root, &["pull", "--ff-only", "origin", &git.branch]),
     )?;
+    pulled = success;
 
     if success {
         append_step(
@@ -82,32 +272,37 @@ pub fn pull_and_build(config: &AppConfig) -> Result<AppUpdateResult> {
     }
 
     if success {
+        let label = cargo_build_label(profile);
+        let args = cargo_build_args(profile);
         append_step(
             &mut output,
             &mut success,
-            "cargo build -p agent-manager-server",
-            run_command_capture(
-                "cargo",
-                &["build", "-p", "agent-manager-server"],
-                &config.repo_root,
-            ),
+            label,
+            run_command_capture("cargo", &args, &config.repo_root),
         )?;
+    }
+
+    let mut rolled_back = false;
+    if !success && pulled {
+        rolled_back = rollback_to_baseline(config, &baseline_commit, &mut output)?;
     }
 
     let refreshed = read_git_state(&config.repo_root, false).ok();
     let version = read_version(&config.repo_root).unwrap_or_else(|_| config.version.clone());
 
-    Ok(AppUpdateResult {
+    if success {
+        if let Some(state) = refreshed.as_ref() {
+            write_update_baseline(config, &state.commit_full)?;
+        }
+    }
+
+    Ok(InnerUpdateResult {
         success,
-        message: if success {
-            format!("已从 GitHub 拉取更新并完成构建（{upstream}）。请重启服务使后端生效。")
-        } else {
-            "更新失败，请查看下方命令输出。".to_string()
-        },
+        message: build_update_message(success, rolled_back, &upstream),
         output,
         version,
         git_commit: refreshed.map(|state| state.commit),
-        restart_required: success,
+        rolled_back,
     })
 }
 
@@ -115,42 +310,260 @@ struct GitState {
     remote: String,
     branch: String,
     commit: String,
+    commit_full: String,
     upstream_ref: Option<String>,
     upstream_commit: Option<String>,
     behind_commits: u32,
 }
 
-fn read_git_state(repo_root: &Path, fetch: bool) -> Result<GitState> {
-    if !repo_root.join(".git").exists() {
-        return Err(anyhow!("当前目录不是 Git 仓库，无法执行自更新"));
+fn idle_update_status(config: &AppConfig) -> AppUpdateStatus {
+    AppUpdateStatus {
+        active: false,
+        phase: "idle".to_string(),
+        message: "当前没有进行中的更新任务。".to_string(),
+        output: String::new(),
+        version: config.version.clone(),
+        git_commit: None,
+    }
+}
+
+fn update_job_path(config: &AppConfig) -> PathBuf {
+    config.managed_base_dir.join(".update-job.json")
+}
+
+fn write_job_state(config: &AppConfig, state: &UpdateJobState) -> Result<()> {
+    fs::create_dir_all(&config.managed_base_dir)
+        .with_context(|| format!("failed to create {}", config.managed_base_dir.display()))?;
+    fs::write(
+        update_job_path(config),
+        serde_json::to_string_pretty(state).context("failed to serialize update job state")?,
+    )
+    .with_context(|| format!("failed to write {}", update_job_path(config).display()))?;
+    Ok(())
+}
+
+fn read_job_state(config: &AppConfig) -> Option<UpdateJobState> {
+    let raw = fs::read_to_string(update_job_path(config)).ok()?;
+    serde_json::from_str(&raw).ok()
+}
+
+fn detect_build_profile() -> BuildProfile {
+    if let Ok(exe) = std::env::current_exe() {
+        let path = exe.to_string_lossy();
+        if path.contains("/release/") || path.contains("\\release\\") {
+            return BuildProfile::Release;
+        }
     }
 
-    if fetch {
-        run_git_capture(repo_root, &["fetch", "origin"])
-            .with_context(|| "git fetch origin failed")?;
+    if std::env::var("APP_ENV")
+        .map(|value| {
+            matches!(
+                value.to_ascii_lowercase().as_str(),
+                "production" | "prod"
+            )
+        })
+        .unwrap_or(false)
+    {
+        return BuildProfile::Release;
     }
 
-    let remote = run_git(repo_root, &["remote", "get-url", "origin"])?;
-    let branch = run_git(repo_root, &["rev-parse", "--abbrev-ref", "HEAD"])?;
-    let commit = run_git(repo_root, &["rev-parse", "--short", "HEAD"])?;
-    let upstream_ref = resolve_upstream_ref(repo_root, &branch);
-    let upstream_commit = upstream_ref
-        .as_ref()
-        .and_then(|reference| run_git(repo_root, &["rev-parse", "--short", reference]).ok());
-    let behind_commits = upstream_ref
-        .as_ref()
-        .map(|reference| count_behind_commits(repo_root, reference))
-        .transpose()?
-        .unwrap_or(0);
+    BuildProfile::Debug
+}
 
-    Ok(GitState {
-        remote,
-        branch,
-        commit,
-        upstream_ref,
-        upstream_commit,
-        behind_commits,
-    })
+fn cargo_build_label(profile: BuildProfile) -> &'static str {
+    match profile {
+        BuildProfile::Release => "cargo build --release -p agent-manager-server",
+        BuildProfile::Debug => "cargo build -p agent-manager-server",
+    }
+}
+
+fn cargo_build_args(profile: BuildProfile) -> Vec<&'static str> {
+    match profile {
+        BuildProfile::Release => vec!["build", "--release", "-p", "agent-manager-server"],
+        BuildProfile::Debug => vec!["build", "-p", "agent-manager-server"],
+    }
+}
+
+fn spawn_detached_worker(exe: &Path, parent_pid: u32, repo_root: &Path) -> Result<()> {
+    let command = format!(
+        "setsid {} {} {} {} </dev/null >/dev/null 2>&1 &",
+        shell_quote(exe),
+        UPDATE_WORKER_FLAG,
+        UPDATE_PARENT_PID_FLAG,
+        parent_pid
+    );
+
+    let capture = run_command_capture("sh", &["-c", &command], repo_root)
+        .context("failed to spawn detached update worker")?;
+
+    if capture.success {
+        Ok(())
+    } else {
+        Err(anyhow!(
+            "failed to spawn detached update worker: {}",
+            capture.output
+        ))
+    }
+}
+
+fn restart_server(config: &AppConfig, parent_pid: u32) -> Result<()> {
+    signal_terminate(parent_pid).context("failed to stop current server process")?;
+    wait_for_process_exit(parent_pid, 30).context("timed out waiting for old server to exit")?;
+    spawn_server_binary(config).context("failed to start new server process")?;
+    Ok(())
+}
+
+fn spawn_server_binary(config: &AppConfig) -> Result<()> {
+    let exe = std::env::current_exe().context("failed to resolve server executable")?;
+    let command = format!(
+        "setsid {} </dev/null >/dev/null 2>&1 &",
+        shell_quote(&exe)
+    );
+
+    let mut command_builder = Command::new("sh");
+    command_builder
+        .arg("-c")
+        .arg(command)
+        .current_dir(&config.repo_root)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+
+    for key in [
+        "APP_ENV",
+        "ADMIN_TOKEN",
+        "PORT",
+        "MANAGED_BASE_DIR",
+        "WEB_DIST_DIR",
+        "REPO_ROOT",
+    ] {
+        if let Ok(value) = std::env::var(key) {
+            command_builder.env(key, value);
+        }
+    }
+
+    command_builder
+        .spawn()
+        .context("failed to spawn replacement server process")?;
+    Ok(())
+}
+
+fn signal_terminate(pid: u32) -> Result<()> {
+    let capture = run_command_capture("kill", &["-TERM", &pid.to_string()], Path::new("/"))
+        .with_context(|| format!("failed to send SIGTERM to process {pid}"))?;
+
+    if capture.success {
+        Ok(())
+    } else {
+        Err(anyhow!(
+            "failed to send SIGTERM to process {pid}: {}",
+            capture.output
+        ))
+    }
+}
+
+fn wait_for_process_exit(pid: u32, timeout_secs: u64) -> Result<()> {
+    let deadline = Duration::from_secs(timeout_secs);
+    let started = std::time::Instant::now();
+
+    while started.elapsed() < deadline {
+        if !process_alive(pid) {
+            return Ok(());
+        }
+        thread::sleep(Duration::from_millis(200));
+    }
+
+    Err(anyhow!("process {pid} did not exit within {timeout_secs}s"))
+}
+
+fn process_alive(pid: u32) -> bool {
+    Path::new(&format!("/proc/{pid}")).exists()
+}
+
+fn shell_quote(path: &Path) -> String {
+    let value = path.display().to_string();
+    format!("'{}'", value.replace('\'', "'\\''"))
+}
+
+fn build_update_message(success: bool, rolled_back: bool, upstream: &str) -> String {
+    if success {
+        return format!("已从 GitHub 拉取更新并完成构建（{upstream}）。");
+    }
+
+    if rolled_back {
+        return "更新失败，已自动回滚到更新前的代码版本。当前服务可继续使用，稍后可直接重试拉取。".to_string();
+    }
+
+    "更新失败，请查看下方命令输出。".to_string()
+}
+
+fn ensure_clean_working_tree(repo_root: &Path) -> Result<()> {
+    let status = run_git_capture(repo_root, &["status", "--porcelain"])?;
+    if !status.success {
+        return Err(anyhow!("无法检查 Git 工作区状态：{}", status.output));
+    }
+
+    if !status.output.trim().is_empty() {
+        return Err(anyhow!(
+            "工作区存在未提交改动，已中止更新。请先提交、还原或清理本地改动后再试。"
+        ));
+    }
+
+    Ok(())
+}
+
+fn update_baseline_path(config: &AppConfig) -> PathBuf {
+    config.managed_base_dir.join(".update-baseline")
+}
+
+fn write_update_baseline(config: &AppConfig, commit: &str) -> Result<()> {
+    fs::create_dir_all(&config.managed_base_dir)
+        .with_context(|| format!("failed to create {}", config.managed_base_dir.display()))?;
+    fs::write(update_baseline_path(config), commit)
+        .with_context(|| "failed to persist update baseline commit")?;
+    Ok(())
+}
+
+fn rollback_to_baseline(
+    config: &AppConfig,
+    baseline_commit: &str,
+    output: &mut String,
+) -> Result<bool> {
+    let mut rollback_success = true;
+    append_step(
+        output,
+        &mut rollback_success,
+        &format!("git reset --hard {baseline_commit}"),
+        run_git_capture(
+            &config.repo_root,
+            &["reset", "--hard", baseline_commit],
+        ),
+    )?;
+
+    if rollback_success {
+        writeln!(
+            output,
+            "已回滚到更新前提交 {baseline_commit}。保底记录保存在 {}。",
+            update_baseline_path(config).display()
+        )
+        .ok();
+        writeln!(output).ok();
+    } else {
+        writeln!(
+            output,
+            "自动回滚失败。可手动执行：git reset --hard {baseline_commit}"
+        )
+        .ok();
+        writeln!(
+            output,
+            "保底提交记录：{}",
+            update_baseline_path(config).display()
+        )
+        .ok();
+        writeln!(output).ok();
+    }
+
+    Ok(rollback_success)
 }
 
 fn resolve_upstream_ref(repo_root: &Path, branch: &str) -> Option<String> {
@@ -179,6 +592,41 @@ fn count_behind_commits(repo_root: &Path, upstream_ref: &str) -> Result<u32> {
         .with_context(|| format!("invalid commit count from git: {output}"))
 }
 
+fn read_git_state(repo_root: &Path, fetch: bool) -> Result<GitState> {
+    if !repo_root.join(".git").exists() {
+        return Err(anyhow!("当前目录不是 Git 仓库，无法执行自更新"));
+    }
+
+    if fetch {
+        run_git_capture(repo_root, &["fetch", "origin"])
+            .with_context(|| "git fetch origin failed")?;
+    }
+
+    let remote = run_git(repo_root, &["remote", "get-url", "origin"])?;
+    let branch = run_git(repo_root, &["rev-parse", "--abbrev-ref", "HEAD"])?;
+    let commit = run_git(repo_root, &["rev-parse", "--short", "HEAD"])?;
+    let commit_full = run_git(repo_root, &["rev-parse", "HEAD"])?;
+    let upstream_ref = resolve_upstream_ref(repo_root, &branch);
+    let upstream_commit = upstream_ref
+        .as_ref()
+        .and_then(|reference| run_git(repo_root, &["rev-parse", "--short", reference]).ok());
+    let behind_commits = upstream_ref
+        .as_ref()
+        .map(|reference| count_behind_commits(repo_root, reference))
+        .transpose()?
+        .unwrap_or(0);
+
+    Ok(GitState {
+        remote,
+        branch,
+        commit,
+        commit_full,
+        upstream_ref,
+        upstream_commit,
+        behind_commits,
+    })
+}
+
 fn run_git(repo_root: &Path, args: &[&str]) -> Result<String> {
     let capture = run_git_capture(repo_root, args)?;
     if capture.success {
@@ -189,7 +637,8 @@ fn run_git(repo_root: &Path, args: &[&str]) -> Result<String> {
 }
 
 fn run_git_capture(repo_root: &Path, args: &[&str]) -> Result<host_proc::CommandCapture> {
-    run_command_capture("git", args, repo_root).with_context(|| format!("failed to run git {}", args.join(" ")))
+    run_command_capture("git", args, repo_root)
+        .with_context(|| format!("failed to run git {}", args.join(" ")))
 }
 
 fn append_step(

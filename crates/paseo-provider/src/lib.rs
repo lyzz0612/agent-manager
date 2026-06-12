@@ -4,7 +4,7 @@ use host_fs::{
     user_path_with_local_bin, PASEO_DEFAULT_WORKSPACE, PASEO_OFFICIAL_RELAY_ENDPOINT,
     PASEO_PLUGIN_ID, SUPPORTED_PLUGINS,
 };
-use host_model::{PluginDetail, PluginSummary, RuntimeActionResult};
+use host_model::{ActionMessage, PluginDetail, PluginSummary, RuntimeActionResult};
 use host_proc::{run_command_capture_with_env, run_command_capture_with_env_timeout, run_command_with_env};
 use std::time::Duration;
 use serde_json::{json, Map, Value};
@@ -32,20 +32,23 @@ impl PaseoProvider {
 
         match plugin_id {
             PASEO_PLUGIN_ID => {
-                let (providers_listing, agents_listing, daemon_pair_json) = if status.installed {
-                    self.read_paseo_detail_outputs()?
-                } else {
-                    (
-                        "Paseo CLI 未安装，无法执行 paseo provider ls".to_string(),
-                        "Paseo CLI 未安装，无法执行 paseo ls".to_string(),
-                        "Paseo CLI 未安装，无法执行 paseo daemon pair --json".to_string(),
-                    )
-                };
+                let (daemon_status, providers_listing, agents_listing, daemon_pair_json) =
+                    if status.installed {
+                        self.read_paseo_detail_outputs()?
+                    } else {
+                        (
+                            "Paseo CLI 未安装，无法执行 paseo daemon status".to_string(),
+                            "Paseo CLI 未安装，无法执行 paseo provider ls".to_string(),
+                            "Paseo CLI 未安装，无法执行 paseo ls".to_string(),
+                            "Paseo CLI 未安装，无法执行 paseo daemon pair --json".to_string(),
+                        )
+                    };
 
                 Ok(PluginDetail {
                     id: definition.id.to_string(),
                     name: definition.name.to_string(),
                     installed: status.installed,
+                    daemon_status,
                     providers_listing,
                     agents_listing,
                     daemon_pair_json,
@@ -77,6 +80,46 @@ impl PaseoProvider {
             PASEO_PLUGIN_ID => self.upgrade_paseo(),
             other => Err(anyhow!("暂不支持升级插件: {other}")),
         }
+    }
+
+    pub fn daemon_action(&self, plugin_id: &str, action: &str) -> Result<ActionMessage> {
+        if plugin_id != PASEO_PLUGIN_ID {
+            return Err(anyhow!("暂不支持 daemon 操作: {plugin_id}"));
+        }
+
+        let status = self.plugin_runtime_status(PASEO_PLUGIN_ID);
+        if !status.installed {
+            return Err(anyhow!("Paseo CLI 未安装，无法执行 daemon 操作"));
+        }
+
+        let command = match action {
+            "start" => "start",
+            "stop" => "stop",
+            "restart" => "restart",
+            other => return Err(anyhow!("未知 daemon 操作: {other}")),
+        };
+
+        let home = user_home_dir()?;
+        let env = self.user_env(&home);
+        let binary = resolve_paseo_cli_binary(&home, &env)?;
+        let output = capture_paseo_cli_output(
+            &binary,
+            &["daemon", command],
+            &home,
+            &env,
+            Some(Duration::from_secs(15)),
+        );
+        let status_output = capture_paseo_cli_output(
+            &binary,
+            &["daemon", "status"],
+            &home,
+            &env,
+            Some(Duration::from_secs(8)),
+        );
+
+        Ok(ActionMessage {
+            message: format!("paseo daemon {command} 完成\n\n{output}\n\n{status_output}"),
+        })
     }
 
     pub fn uninstall_plugin(&self, plugin_id: &str) -> Result<RuntimeActionResult> {
@@ -177,11 +220,18 @@ impl PaseoProvider {
         }
     }
 
-    fn read_paseo_detail_outputs(&self) -> Result<(String, String, String)> {
+    fn read_paseo_detail_outputs(&self) -> Result<(String, String, String, String)> {
         let home = user_home_dir()?;
         let env = self.user_env(&home);
         let binary = resolve_paseo_cli_binary(&home, &env)?;
 
+        let daemon_status = capture_paseo_cli_output(
+            &binary,
+            &["daemon", "status"],
+            &home,
+            &env,
+            Some(Duration::from_secs(8)),
+        );
         let providers_listing = capture_paseo_cli_output(
             &binary,
             &["provider", "ls"],
@@ -199,7 +249,12 @@ impl PaseoProvider {
             Some(Duration::from_secs(8)),
         ));
 
-        Ok((providers_listing, agents_listing, daemon_pair_json))
+        Ok((
+            daemon_status,
+            providers_listing,
+            agents_listing,
+            daemon_pair_json,
+        ))
     }
 
     fn install_paseo(&self) -> Result<RuntimeActionResult> {
@@ -214,6 +269,7 @@ impl PaseoProvider {
         })?;
 
         self.write_paseo_config(&home)?;
+        self.ensure_paseo_daemon(&home, &env)?;
 
         let status = self.plugin_runtime_status(PASEO_PLUGIN_ID);
         if !status.installed {
@@ -228,7 +284,7 @@ impl PaseoProvider {
             install_dir: status.install_dir,
             data_dir: status.data_dir,
             message: format!(
-                "已安装 Paseo CLI，并写入官方 relay 配置；默认工作区为 {PASEO_DEFAULT_WORKSPACE}"
+                "已安装 Paseo CLI，写入官方 relay 配置，并已启动本地 daemon；默认工作区为 {PASEO_DEFAULT_WORKSPACE}"
             ),
         })
     }
@@ -251,6 +307,7 @@ impl PaseoProvider {
         .context("failed to upgrade @getpaseo/cli via npm")?;
 
         self.write_paseo_config(&home)?;
+        self.ensure_paseo_daemon(&home, &env)?;
 
         let status = self.plugin_runtime_status(PASEO_PLUGIN_ID);
 
@@ -259,7 +316,7 @@ impl PaseoProvider {
             version: status.version,
             install_dir: status.install_dir,
             data_dir: status.data_dir,
-            message: "已升级 Paseo CLI 到最新版本".to_string(),
+            message: "已升级 Paseo CLI 到最新版本，并已确保本地 daemon 运行".to_string(),
         })
     }
 
@@ -355,6 +412,29 @@ impl PaseoProvider {
             .with_context(|| format!("failed to write {}", config_path.display()))?;
 
         Ok(())
+    }
+
+    fn ensure_paseo_daemon(&self, home: &Path, env: &BTreeMap<String, String>) -> Result<()> {
+        let binary = resolve_paseo_cli_binary(home, env)?;
+        let status = capture_paseo_cli_output(
+            &binary,
+            &["daemon", "status"],
+            home,
+            env,
+            Some(Duration::from_secs(8)),
+        );
+        if status.contains("running") {
+            return Ok(());
+        }
+
+        run_paseo_cli(
+            &binary,
+            &["daemon", "start"],
+            home,
+            env,
+            Some(Duration::from_secs(15)),
+        )
+        .context("failed to start Paseo daemon after install/upgrade")
     }
 
     fn user_env(&self, home: &Path) -> BTreeMap<String, String> {

@@ -3,10 +3,10 @@ mod update;
 use anyhow::{bail, Context, Result};
 use cursor_provider::CursorProvider;
 use host_model::{
-    AgentSummary, AppSettings, AppStatus, AppUpdateResult, CursorAccountStatus,
-    CursorAuthFlowStatus, CursorRuntimeStatus, KnownConfig, PluginDetail, PluginSummary,
-    RawConfigDocument, RawConfigPreview, RuntimeActionResult, SkillDocument, SkillFileSummary,
-    SkillSummary,
+    ActionMessage, AgentSummary, AppSettings, AppStatus, AppUpdateResult, AppUpdateStatus,
+    CursorAccountStatus, CursorAuthFlowStatus, CursorRuntimeStatus, KnownConfig, PluginDetail,
+    PluginSummary, RawConfigDocument, RawConfigPreview, RuntimeActionResult, SkillDocument,
+    SkillFileSummary, SkillSummary,
 };
 use paseo_provider::PaseoProvider;
 use std::collections::HashSet;
@@ -15,6 +15,8 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
 use uuid::Uuid;
+
+pub use update::parse_update_worker_parent_pid;
 
 pub const DEFAULT_DEV_TOKEN: &str = "123456";
 pub const DEFAULT_PORT: u16 = 3000;
@@ -149,8 +151,18 @@ impl AppState {
         update::check_for_updates(&self.config)
     }
 
-    pub fn pull_and_build(&self) -> Result<AppUpdateResult> {
-        update::pull_and_build(&self.config)
+    pub fn spawn_background_update(&self) -> Result<AppUpdateResult> {
+        update::spawn_background_update(&self.config)
+    }
+
+    pub fn update_job_status(&self) -> AppUpdateStatus {
+        update::update_job_status(&self.config)
+    }
+
+    pub fn run_update_worker(parent_pid: u32) -> Result<()> {
+        let repo_root = std::env::current_dir().context("failed to resolve current directory")?;
+        let config = AppConfig::load(&repo_root)?;
+        update::run_update_worker(&config, parent_pid)
     }
 
     pub fn list_agents(&self) -> Vec<AgentSummary> {
@@ -187,6 +199,10 @@ impl AppState {
 
     pub fn uninstall_plugin(&self, plugin_id: &str) -> Result<RuntimeActionResult> {
         self.paseo_provider().uninstall_plugin(plugin_id)
+    }
+
+    pub fn paseo_daemon_action(&self, plugin_id: &str, action: &str) -> Result<ActionMessage> {
+        self.paseo_provider().daemon_action(plugin_id, action)
     }
 
     pub fn cursor_runtime_status(&self) -> CursorRuntimeStatus {

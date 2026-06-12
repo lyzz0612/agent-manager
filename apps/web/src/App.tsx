@@ -80,6 +80,7 @@ type PluginDetail = {
   id: string;
   name: string;
   installed: boolean;
+  daemon_status: string;
   providers_listing: string;
   agents_listing: string;
   daemon_pair_json: string;
@@ -131,6 +132,16 @@ type AppUpdateResult = {
   version: string;
   git_commit: string | null;
   restart_required: boolean;
+  started?: boolean;
+};
+
+type AppUpdateStatus = {
+  active: boolean;
+  phase: string;
+  message: string;
+  output: string;
+  version: string;
+  git_commit: string | null;
 };
 
 type PageId = "overview" | "agents" | "plugins" | "skills" | "settings";
@@ -430,10 +441,47 @@ export default function App() {
     }
   }
 
+  async function pollUpdateJob() {
+    const maxAttempts = 300;
+
+    for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+      await new Promise((resolve) => window.setTimeout(resolve, 2000));
+
+      try {
+        const status = await requestJson<AppUpdateStatus>("/api/app/update/status");
+        setUpdateOutput(status.output);
+
+        if (status.active) {
+          if (status.phase === "restarting") {
+            notify("info", status.message);
+          }
+          continue;
+        }
+
+        if (status.phase === "success") {
+          notify("success", status.message);
+          window.setTimeout(() => {
+            void loadDashboard();
+          }, 1500);
+        } else if (status.phase === "failed") {
+          notify("error", status.message);
+        }
+
+        setPullingUpdate(false);
+        return;
+      } catch {
+        // 服务重启期间请求可能短暂失败，继续轮询。
+      }
+    }
+
+    setPullingUpdate(false);
+    notify("error", "更新状态查询超时，请手动检查服务是否已恢复。");
+  }
+
   async function pullUpdates() {
     if (
       !window.confirm(
-        "将从 GitHub 拉取最新代码并重新构建前端与后端，完成后需要手动重启服务。继续吗？",
+        "将从 GitHub 拉取最新代码并在后台重新构建，完成后服务会自动重启。继续吗？",
       )
     ) {
       return;
@@ -445,6 +493,13 @@ export default function App() {
       const result = await requestJson<AppUpdateResult>("/api/app/update/pull", {
         method: "POST",
       });
+
+      if (result.started) {
+        notify("info", result.message);
+        void pollUpdateJob();
+        return;
+      }
+
       setUpdateOutput(result.output);
       setAppSettings((current) =>
         current
@@ -462,9 +517,9 @@ export default function App() {
         current ? { ...current, version: result.version } : current,
       );
       notify(result.success ? "success" : "error", result.message);
+      setPullingUpdate(false);
     } catch (error) {
       notify("error", getErrorMessage(error));
-    } finally {
       setPullingUpdate(false);
     }
   }
@@ -604,6 +659,22 @@ export default function App() {
       setPluginDetail(detail);
     } catch (error) {
       setPluginDetail(null);
+      notify("error", getErrorMessage(error));
+    }
+  }
+
+  async function handlePaseoDaemonAction(
+    pluginId: string,
+    action: "start" | "stop" | "restart",
+  ) {
+    try {
+      const result = await requestJson<{ message: string }>(
+        `/api/plugins/${encodeURIComponent(pluginId)}/daemon/${action}`,
+        { method: "POST" },
+      );
+      await loadPluginDetail(pluginId);
+      notify("success", result.message);
+    } catch (error) {
       notify("error", getErrorMessage(error));
     }
   }
@@ -977,6 +1048,8 @@ export default function App() {
               plugin={selectedPlugin}
               onBack={backToPluginList}
               onAction={handlePluginAction}
+              onDaemonAction={handlePaseoDaemonAction}
+              onRefresh={loadPluginDetail}
             />
           ) : selectedPlugin ? (
             <div className="screen-message">正在加载插件详情...</div>
@@ -1216,8 +1289,7 @@ export default function App() {
                     </button>
                   </div>
                   <p className="muted">
-                    将执行 git pull、npm run build:web 和 cargo build。完成后请重启 agent-manager
-                    服务。
+                    将在独立后台进程执行 git pull、npm run build:web 和 cargo build --release。构建失败会自动回滚；构建成功后会自动重启服务，无需手动操作。
                   </p>
                   {updateOutput ? (
                     <div className="update-log">
@@ -1487,8 +1559,13 @@ function PluginDetailView(props: {
     action: "install" | "upgrade" | "uninstall",
     pluginName?: string,
   ) => Promise<void>;
+  onDaemonAction: (
+    pluginId: string,
+    action: "start" | "stop" | "restart",
+  ) => Promise<void>;
+  onRefresh: (pluginId: string) => Promise<void>;
 }) {
-  const { plugin, detail, onBack, onAction } = props;
+  const { plugin, detail, onBack, onAction, onDaemonAction, onRefresh } = props;
 
   return (
     <div className="agent-detail">
@@ -1500,6 +1577,46 @@ function PluginDetailView(props: {
       </div>
 
       <div className="detail-tab-content">
+        <Panel title="Daemon">
+          <p className="code-meta">
+            <code>paseo daemon status</code>
+          </p>
+          <pre className="cli-output">{detail.daemon_status || "（无输出）"}</pre>
+          <div className="actions">
+            <button
+              className="primary"
+              disabled={!plugin.installed}
+              onClick={() => void onDaemonAction(plugin.id, "start")}
+              type="button"
+            >
+              启动
+            </button>
+            <button
+              className="secondary"
+              disabled={!plugin.installed}
+              onClick={() => void onDaemonAction(plugin.id, "restart")}
+              type="button"
+            >
+              重启
+            </button>
+            <button
+              className="danger"
+              disabled={!plugin.installed}
+              onClick={() => void onDaemonAction(plugin.id, "stop")}
+              type="button"
+            >
+              停止
+            </button>
+            <button
+              className="ghost"
+              disabled={!plugin.installed}
+              onClick={() => void onRefresh(plugin.id)}
+              type="button"
+            >
+              刷新
+            </button>
+          </div>
+        </Panel>
         <Panel title="Providers">
           <p className="code-meta">
             <code>paseo provider ls</code>

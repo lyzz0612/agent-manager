@@ -1,4 +1,4 @@
-use app_core::{AppConfig, AppState};
+use app_core::{parse_update_worker_parent_pid, AppConfig, AppState};
 use axum::{
     extract::{Path, State},
     http::{header::SET_COOKIE, HeaderMap, StatusCode},
@@ -7,7 +7,8 @@ use axum::{
     Json, Router,
 };
 use host_model::{
-    ActionMessage, AgentSummary, AppSettings, AppStatus, AppUpdateResult, AuthLoginRequest,
+    ActionMessage, AgentSummary, AppSettings, AppStatus, AppUpdateResult, AppUpdateStatus,
+    AuthLoginRequest,
     AuthLoginResponse, CursorAccountStatus, CursorAuthFlowStatus, CursorRuntimeStatus,
     KnownConfig, PluginDetail, PluginSummary, RawConfigDocument, RawConfigPreview, RawConfigUpdateRequest,
     RuntimeActionResult, SessionStatus, SkillDocument, SkillFileSummary, SkillSummary,
@@ -51,6 +52,11 @@ impl IntoResponse for ApiError {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    let args: Vec<String> = std::env::args().collect();
+    if let Some(parent_pid) = parse_update_worker_parent_pid(&args) {
+        return AppState::run_update_worker(parent_pid);
+    }
+
     tracing_subscriber::fmt()
         .with_env_filter("agent_manager_server=info,tower_http=info")
         .init();
@@ -66,6 +72,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/app/status", get(app_status))
         .route("/app/settings", get(app_settings))
         .route("/app/update/check", post(check_app_update))
+        .route("/app/update/status", get(update_job_status))
         .route("/app/update/pull", post(pull_app_update))
         .route("/auth/login", post(login))
         .route("/auth/session", get(session_status))
@@ -79,6 +86,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/plugins/:id/install", post(install_plugin))
         .route("/plugins/:id/upgrade", post(upgrade_plugin))
         .route("/plugins/:id/uninstall", post(uninstall_plugin))
+        .route("/plugins/:id/daemon/:action", post(paseo_daemon_action))
         .route("/cursor/runtime", get(runtime_status))
         .route("/cursor/runtime/install", post(install_runtime))
         .route("/cursor/runtime/upgrade", post(upgrade_runtime))
@@ -109,9 +117,31 @@ async fn main() -> anyhow::Result<()> {
 
     let listener = tokio::net::TcpListener::bind(("0.0.0.0", port)).await?;
     info!(port, "agent-manager server listening");
-    axum::serve(listener, app).await?;
+    axum::serve(listener, app)
+        .with_graceful_shutdown(shutdown_signal())
+        .await?;
 
     Ok(())
+}
+
+async fn shutdown_signal() {
+    #[cfg(unix)]
+    {
+        use tokio::signal::unix::{signal, SignalKind};
+
+        let mut terminate =
+            signal(SignalKind::terminate()).expect("failed to install SIGTERM handler");
+        terminate.recv().await;
+        info!("received SIGTERM, shutting down gracefully");
+    }
+
+    #[cfg(not(unix))]
+    {
+        tokio::signal::ctrl_c()
+            .await
+            .expect("failed to install Ctrl+C handler");
+        info!("received Ctrl+C, shutting down gracefully");
+    }
 }
 
 async fn health() -> Json<ActionMessage> {
@@ -140,12 +170,20 @@ async fn check_app_update(
     Ok(Json(state.check_for_updates()?))
 }
 
+async fn update_job_status(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Result<Json<AppUpdateStatus>, ApiError> {
+    ensure_authenticated(&state, &headers)?;
+    Ok(Json(state.update_job_status()))
+}
+
 async fn pull_app_update(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
 ) -> Result<Json<AppUpdateResult>, ApiError> {
     ensure_authenticated(&state, &headers)?;
-    Ok(Json(state.pull_and_build()?))
+    Ok(Json(state.spawn_background_update()?))
 }
 
 async fn login(
@@ -262,6 +300,15 @@ async fn uninstall_plugin(
 ) -> Result<Json<RuntimeActionResult>, ApiError> {
     ensure_authenticated(&state, &headers)?;
     Ok(Json(state.uninstall_plugin(&plugin_id)?))
+}
+
+async fn paseo_daemon_action(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path((plugin_id, action)): Path<(String, String)>,
+) -> Result<Json<ActionMessage>, ApiError> {
+    ensure_authenticated(&state, &headers)?;
+    Ok(Json(state.paseo_daemon_action(&plugin_id, &action)?))
 }
 
 async fn runtime_status(
