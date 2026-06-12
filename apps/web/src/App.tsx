@@ -891,7 +891,9 @@ export default function App() {
               登录
             </button>
           </form>
-          {message ? <StatusBanner {...message} /> : null}
+          {message ? (
+            <StatusBanner {...message} onDismiss={() => setMessage(null)} />
+          ) : null}
         </section>
       </main>
     );
@@ -932,7 +934,9 @@ export default function App() {
           <h2>{mainTitle}</h2>
         </header>
 
-        {message ? <StatusBanner {...message} /> : null}
+        {message ? (
+          <StatusBanner {...message} onDismiss={() => setMessage(null)} />
+        ) : null}
 
         <main className="main-body">
         {activePage === "overview" ? (
@@ -1844,8 +1848,33 @@ function InfoRow(props: { label: string; value: string }) {
   );
 }
 
-function StatusBanner(props: { kind: MessageKind; text: string }) {
-  return <div className={`status-banner ${props.kind}`}>{props.text}</div>;
+const STATUS_BANNER_AUTO_DISMISS_MS: Record<MessageKind, number> = {
+  success: 4000,
+  info: 4000,
+  error: 8000,
+};
+
+function StatusBanner(props: { kind: MessageKind; text: string; onDismiss: () => void }) {
+  const { kind, text, onDismiss } = props;
+
+  useEffect(() => {
+    const timer = window.setTimeout(onDismiss, STATUS_BANNER_AUTO_DISMISS_MS[kind]);
+    return () => window.clearTimeout(timer);
+  }, [kind, text, onDismiss]);
+
+  return (
+    <div className={`status-banner ${kind}`} role="status">
+      <span className="status-banner__text">{text}</span>
+      <button
+        aria-label="关闭"
+        className="status-banner__close"
+        onClick={onDismiss}
+        type="button"
+      >
+        ×
+      </button>
+    </div>
+  );
 }
 
 function getErrorMessage(error: unknown) {

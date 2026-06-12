@@ -102,23 +102,23 @@ impl PaseoProvider {
         let home = user_home_dir()?;
         let env = self.user_env(&home);
         let binary = resolve_paseo_cli_binary(&home, &env)?;
-        let output = capture_paseo_cli_output(
+        run_paseo_cli(
             &binary,
             &["daemon", command],
             &home,
             &env,
             Some(Duration::from_secs(15)),
-        );
-        let status_output = capture_paseo_cli_output(
-            &binary,
-            &["daemon", "status"],
-            &home,
-            &env,
-            Some(Duration::from_secs(8)),
-        );
+        )?;
+
+        let message = match command {
+            "start" => "Paseo daemon 已启动",
+            "stop" => "Paseo daemon 已停止",
+            "restart" => "Paseo daemon 已重启",
+            _ => unreachable!(),
+        };
 
         Ok(ActionMessage {
-            message: format!("paseo daemon {command} 完成\n\n{output}\n\n{status_output}"),
+            message: message.to_string(),
         })
     }
 
