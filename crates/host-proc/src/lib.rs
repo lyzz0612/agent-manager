@@ -3,6 +3,12 @@ use std::collections::BTreeMap;
 use std::path::Path;
 use std::process::Command;
 
+#[derive(Debug, Clone)]
+pub struct CommandCapture {
+    pub success: bool,
+    pub output: String,
+}
+
 pub fn run_command(program: &str, args: &[&str], working_dir: &Path) -> Result<String> {
     run_command_with_env(program, args, working_dir, &BTreeMap::new())
 }
@@ -13,6 +19,24 @@ pub fn run_command_with_env(
     working_dir: &Path,
     envs: &BTreeMap<String, String>,
 ) -> Result<String> {
+    let capture = run_command_capture_with_env(program, args, working_dir, envs)?;
+    if capture.success {
+        Ok(capture.output)
+    } else {
+        Err(anyhow::anyhow!("command failed: {}", capture.output))
+    }
+}
+
+pub fn run_command_capture(program: &str, args: &[&str], working_dir: &Path) -> Result<CommandCapture> {
+    run_command_capture_with_env(program, args, working_dir, &BTreeMap::new())
+}
+
+pub fn run_command_capture_with_env(
+    program: &str,
+    args: &[&str],
+    working_dir: &Path,
+    envs: &BTreeMap<String, String>,
+) -> Result<CommandCapture> {
     let output = Command::new(program)
         .args(args)
         .current_dir(working_dir)
@@ -20,12 +44,20 @@ pub fn run_command_with_env(
         .output()
         .with_context(|| format!("failed to start command: {program}"))?;
 
-    if output.status.success() {
-        Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
-    } else {
-        Err(anyhow::anyhow!(
-            "command failed: {}",
-            String::from_utf8_lossy(&output.stderr).trim()
-        ))
+    Ok(CommandCapture {
+        success: output.status.success(),
+        output: combine_output(&output.stdout, &output.stderr),
+    })
+}
+
+fn combine_output(stdout: &[u8], stderr: &[u8]) -> String {
+    let stdout = String::from_utf8_lossy(stdout);
+    let stderr = String::from_utf8_lossy(stderr);
+
+    match (stdout.trim().is_empty(), stderr.trim().is_empty()) {
+        (true, true) => String::new(),
+        (false, true) => stdout.trim().to_string(),
+        (true, false) => stderr.trim().to_string(),
+        (false, false) => format!("{stdout}\n{stderr}").trim().to_string(),
     }
 }

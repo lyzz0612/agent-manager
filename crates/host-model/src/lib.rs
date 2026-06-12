@@ -26,7 +26,8 @@ pub struct AppStatus {
 pub struct CursorRuntimeStatus {
     pub installed: bool,
     pub version: Option<String>,
-    pub managed_root: String,
+    pub install_dir: String,
+    pub data_dir: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -85,14 +86,39 @@ pub struct RawConfigPreview {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SkillSummary {
+pub struct AgentSummary {
+    pub id: String,
     pub name: String,
+    pub installed: bool,
+    pub version: Option<String>,
+    pub install_dir: String,
+    pub data_dir: String,
+    pub install_supported: bool,
+    pub install_command: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SkillSummary {
+    pub id: String,
+    pub name: String,
+    pub agent: String,
+    pub path: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SkillFileSummary {
+    pub id: String,
+    pub name: String,
+    pub agent: String,
+    pub folder: String,
     pub path: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SkillDocument {
+    pub id: String,
     pub name: String,
+    pub agent: String,
     pub path: String,
     pub content: String,
 }
@@ -106,11 +132,37 @@ pub struct SkillUpdateRequest {
 pub struct RuntimeActionResult {
     pub installed: bool,
     pub version: Option<String>,
-    pub managed_root: String,
+    pub install_dir: String,
+    pub data_dir: String,
     pub message: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ActionMessage {
     pub message: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AppSettings {
+    pub app_name: String,
+    pub version: String,
+    pub mode: String,
+    pub repo_root: String,
+    pub update_supported: bool,
+    pub git_remote: Option<String>,
+    pub git_branch: Option<String>,
+    pub git_commit: Option<String>,
+    pub git_upstream_commit: Option<String>,
+    pub update_available: bool,
+    pub behind_commits: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AppUpdateResult {
+    pub success: bool,
+    pub message: String,
+    pub output: String,
+    pub version: String,
+    pub git_commit: Option<String>,
+    pub restart_required: bool,
 }

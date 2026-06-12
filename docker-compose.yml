@@ -1,8 +1,12 @@
 services:
   agent-manager:
-    image: ${IMAGE_NAME:-ghcr.io/OWNER/agent-manager}:${IMAGE_TAG:-latest}
+    image: ${IMAGE_NAME:-ghcr.io/lyzz0612/agent-manager}:${IMAGE_TAG:-latest}
+    restart: unless-stopped
     ports:
       - "${PORT:-3000}:3000"
     environment:
       APP_ENV: production
       ADMIN_TOKEN: ${ADMIN_TOKEN:?ADMIN_TOKEN is required}
+      PORT: "3000"
+      MANAGED_BASE_DIR: /app/state
+      WEB_DIST_DIR: /app/apps/web/dist

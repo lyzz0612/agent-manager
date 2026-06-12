@@ -1,9 +1,11 @@
+mod update;
+
 use anyhow::{bail, Context, Result};
 use cursor_provider::CursorProvider;
 use host_model::{
-    ActionMessage, AppStatus, CursorAccountStatus, CursorAuthFlowStatus, CursorRuntimeStatus,
-    KnownConfig, RawConfigDocument, RawConfigPreview, RuntimeActionResult, SkillDocument,
-    SkillSummary,
+    AgentSummary, AppSettings, AppStatus, AppUpdateResult, CursorAccountStatus,
+    CursorAuthFlowStatus, CursorRuntimeStatus, KnownConfig, RawConfigDocument, RawConfigPreview,
+    RuntimeActionResult, SkillDocument, SkillFileSummary, SkillSummary,
 };
 use std::collections::HashSet;
 use std::env;
@@ -49,6 +51,7 @@ pub struct AppConfig {
     pub admin_token: String,
     pub managed_base_dir: PathBuf,
     pub web_dist_dir: PathBuf,
+    pub repo_root: PathBuf,
     pub version: String,
 }
 
@@ -66,6 +69,9 @@ impl AppConfig {
         let web_dist_dir = env::var("WEB_DIST_DIR")
             .map(PathBuf::from)
             .unwrap_or_else(|_| repo_root.join("apps").join("web").join("dist"));
+        let resolved_repo_root = env::var("REPO_ROOT")
+            .map(PathBuf::from)
+            .unwrap_or_else(|_| repo_root.to_path_buf());
 
         Ok(Self {
             app_name: "agent-manager".to_string(),
@@ -74,6 +80,7 @@ impl AppConfig {
             admin_token,
             managed_base_dir,
             web_dist_dir,
+            repo_root: resolved_repo_root,
             version: read_version(repo_root)?,
         })
     }
@@ -95,9 +102,6 @@ pub struct AppState {
 
 impl AppState {
     pub fn new(config: AppConfig) -> Result<Self> {
-        let provider = CursorProvider::new(config.managed_base_dir.clone());
-        provider.ensure_layout()?;
-
         Ok(Self {
             config,
             sessions: Arc::new(RwLock::new(HashSet::new())),
@@ -133,6 +137,34 @@ impl AppState {
 
     pub fn status(&self) -> AppStatus {
         self.config.status()
+    }
+
+    pub fn app_settings(&self) -> AppSettings {
+        update::app_settings(&self.config)
+    }
+
+    pub fn check_for_updates(&self) -> Result<AppSettings> {
+        update::check_for_updates(&self.config)
+    }
+
+    pub fn pull_and_build(&self) -> Result<AppUpdateResult> {
+        update::pull_and_build(&self.config)
+    }
+
+    pub fn list_agents(&self) -> Vec<AgentSummary> {
+        self.provider().list_agents()
+    }
+
+    pub fn install_agent(&self, agent_id: &str) -> Result<RuntimeActionResult> {
+        self.provider().install_agent(agent_id)
+    }
+
+    pub fn upgrade_agent(&self, agent_id: &str) -> Result<RuntimeActionResult> {
+        self.provider().upgrade_agent(agent_id)
+    }
+
+    pub fn uninstall_agent(&self, agent_id: &str) -> Result<RuntimeActionResult> {
+        self.provider().uninstall_agent(agent_id)
     }
 
     pub fn cursor_runtime_status(&self) -> CursorRuntimeStatus {
@@ -179,20 +211,20 @@ impl AppState {
         self.provider().list_skills()
     }
 
-    pub fn read_skill(&self, name: &str) -> Result<SkillDocument> {
-        self.provider().read_skill(name)
+    pub fn list_skill_files(&self, folder_id: &str) -> Result<Vec<SkillFileSummary>> {
+        self.provider().list_skill_files(folder_id)
     }
 
-    pub fn update_skill(&self, name: &str, content: &str) -> Result<SkillDocument> {
-        self.provider().update_skill(name, content)
+    pub fn read_skill(&self, id: &str) -> Result<SkillDocument> {
+        self.provider().read_skill(id)
     }
 
-    pub fn delete_skill(&self, name: &str) -> Result<ActionMessage> {
-        self.provider().delete_skill(name)
+    pub fn update_skill(&self, id: &str, content: &str) -> Result<SkillDocument> {
+        self.provider().update_skill(id, content)
     }
 
     fn provider(&self) -> CursorProvider {
-        CursorProvider::new(self.config.managed_base_dir.clone())
+        CursorProvider::new()
     }
 }
 

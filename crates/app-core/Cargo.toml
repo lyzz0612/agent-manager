@@ -7,4 +7,7 @@ publish.workspace = true
 
 [dependencies]
 anyhow.workspace = true
+cursor-provider = { path = "../cursor-provider" }
 host-model = { path = "../host-model" }
+host-proc = { path = "../host-proc" }
+uuid.workspace = true

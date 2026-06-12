@@ -1,17 +1,16 @@
 use app_core::{AppConfig, AppState};
 use axum::{
     extract::{Path, State},
-    http::StatusCode,
+    http::{header::SET_COOKIE, HeaderMap, StatusCode},
     response::{IntoResponse, Response},
-    routing::{delete, get, post, put},
+    routing::{get, post},
     Json, Router,
 };
-use axum_extra::extract::cookie::{Cookie, CookieJar, SameSite};
 use host_model::{
-    ActionMessage, AppStatus, AuthLoginRequest, AuthLoginResponse, CursorAccountStatus,
-    CursorAuthFlowStatus, CursorRuntimeStatus, KnownConfig, RawConfigDocument, RawConfigPreview,
-    RawConfigUpdateRequest, RuntimeActionResult, SessionStatus, SkillDocument, SkillSummary,
-    SkillUpdateRequest,
+    ActionMessage, AgentSummary, AppSettings, AppStatus, AppUpdateResult, AuthLoginRequest,
+    AuthLoginResponse, CursorAccountStatus, CursorAuthFlowStatus, CursorRuntimeStatus,
+    KnownConfig, RawConfigDocument, RawConfigPreview, RawConfigUpdateRequest, RuntimeActionResult,
+    SessionStatus, SkillDocument, SkillFileSummary, SkillSummary, SkillUpdateRequest,
 };
 use serde_json::json;
 use std::sync::Arc;
@@ -64,9 +63,16 @@ async fn main() -> anyhow::Result<()> {
     let api = Router::new()
         .route("/health", get(health))
         .route("/app/status", get(app_status))
+        .route("/app/settings", get(app_settings))
+        .route("/app/update/check", post(check_app_update))
+        .route("/app/update/pull", post(pull_app_update))
         .route("/auth/login", post(login))
         .route("/auth/session", get(session_status))
         .route("/auth/logout", post(logout))
+        .route("/agents", get(list_agents))
+        .route("/agents/:id/install", post(install_agent))
+        .route("/agents/:id/upgrade", post(upgrade_agent))
+        .route("/agents/:id/uninstall", post(uninstall_agent))
         .route("/cursor/runtime", get(runtime_status))
         .route("/cursor/runtime/install", post(install_runtime))
         .route("/cursor/runtime/upgrade", post(upgrade_runtime))
@@ -80,9 +86,10 @@ async fn main() -> anyhow::Result<()> {
         .route("/profile/raw-config/preview", post(preview_raw_config))
         .route("/profile/raw-config/confirm", post(confirm_raw_config))
         .route("/profile/skills", get(list_skills))
+        .route("/profile/skills/:folder_id/files", get(list_skill_files))
         .route(
-            "/profile/skills/:name",
-            get(get_skill).put(update_skill).delete(delete_skill),
+            "/profile/skills/:id",
+            get(get_skill).put(update_skill),
         )
         .with_state(state.clone());
 
@@ -111,11 +118,34 @@ async fn app_status(State(state): State<Arc<AppState>>) -> Json<AppStatus> {
     Json(state.status())
 }
 
+async fn app_settings(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Result<Json<AppSettings>, ApiError> {
+    ensure_authenticated(&state, &headers)?;
+    Ok(Json(state.app_settings()))
+}
+
+async fn check_app_update(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Result<Json<AppSettings>, ApiError> {
+    ensure_authenticated(&state, &headers)?;
+    Ok(Json(state.check_for_updates()?))
+}
+
+async fn pull_app_update(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Result<Json<AppUpdateResult>, ApiError> {
+    ensure_authenticated(&state, &headers)?;
+    Ok(Json(state.pull_and_build()?))
+}
+
 async fn login(
     State(state): State<Arc<AppState>>,
-    jar: CookieJar,
     Json(payload): Json<AuthLoginRequest>,
-) -> Result<(CookieJar, Json<AuthLoginResponse>), ApiError> {
+) -> Result<([(axum::http::HeaderName, String); 1], Json<AuthLoginResponse>), ApiError> {
     let Some(session_token) = state.login(&payload.token) else {
         return Err(ApiError::new(
             StatusCode::UNAUTHORIZED,
@@ -123,161 +153,188 @@ async fn login(
         ));
     };
 
-    let cookie = Cookie::build((SESSION_COOKIE_NAME, session_token.clone()))
-        .path("/")
-        .http_only(true)
-        .same_site(SameSite::Lax)
-        .build();
-
     Ok((
-        jar.add(cookie),
+        [(SET_COOKIE, build_session_cookie(&session_token))],
         Json(AuthLoginResponse { session_token }),
     ))
 }
 
-async fn session_status(State(state): State<Arc<AppState>>, jar: CookieJar) -> Json<SessionStatus> {
+async fn session_status(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Json<SessionStatus> {
     Json(SessionStatus {
-        authenticated: is_authenticated(&state, &jar),
+        authenticated: is_authenticated(&state, &headers),
     })
 }
 
 async fn logout(
     State(state): State<Arc<AppState>>,
-    jar: CookieJar,
-) -> Result<(CookieJar, StatusCode), ApiError> {
-    if let Some(cookie) = jar.get(SESSION_COOKIE_NAME) {
-        state.logout(cookie.value());
+    headers: HeaderMap,
+) -> Result<([(axum::http::HeaderName, String); 1], StatusCode), ApiError> {
+    if let Some(session_token) = extract_session_token(&headers) {
+        state.logout(&session_token);
     }
 
-    let removed = Cookie::build((SESSION_COOKIE_NAME, ""))
-        .path("/")
-        .http_only(true)
-        .build();
+    Ok(([(SET_COOKIE, clear_session_cookie())], StatusCode::NO_CONTENT))
+}
 
-    Ok((jar.remove(removed), StatusCode::NO_CONTENT))
+async fn list_agents(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Result<Json<Vec<AgentSummary>>, ApiError> {
+    ensure_authenticated(&state, &headers)?;
+    Ok(Json(state.list_agents()))
+}
+
+async fn install_agent(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(agent_id): Path<String>,
+) -> Result<Json<RuntimeActionResult>, ApiError> {
+    ensure_authenticated(&state, &headers)?;
+    Ok(Json(state.install_agent(&agent_id)?))
+}
+
+async fn upgrade_agent(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(agent_id): Path<String>,
+) -> Result<Json<RuntimeActionResult>, ApiError> {
+    ensure_authenticated(&state, &headers)?;
+    Ok(Json(state.upgrade_agent(&agent_id)?))
+}
+
+async fn uninstall_agent(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(agent_id): Path<String>,
+) -> Result<Json<RuntimeActionResult>, ApiError> {
+    ensure_authenticated(&state, &headers)?;
+    Ok(Json(state.uninstall_agent(&agent_id)?))
 }
 
 async fn runtime_status(
     State(state): State<Arc<AppState>>,
-    jar: CookieJar,
+    headers: HeaderMap,
 ) -> Result<Json<CursorRuntimeStatus>, ApiError> {
-    ensure_authenticated(&state, &jar)?;
+    ensure_authenticated(&state, &headers)?;
     Ok(Json(state.cursor_runtime_status()))
 }
 
 async fn install_runtime(
     State(state): State<Arc<AppState>>,
-    jar: CookieJar,
+    headers: HeaderMap,
 ) -> Result<Json<RuntimeActionResult>, ApiError> {
-    ensure_authenticated(&state, &jar)?;
+    ensure_authenticated(&state, &headers)?;
     Ok(Json(state.install_cursor_runtime()?))
 }
 
 async fn upgrade_runtime(
     State(state): State<Arc<AppState>>,
-    jar: CookieJar,
+    headers: HeaderMap,
 ) -> Result<Json<RuntimeActionResult>, ApiError> {
-    ensure_authenticated(&state, &jar)?;
+    ensure_authenticated(&state, &headers)?;
     Ok(Json(state.upgrade_cursor_runtime()?))
 }
 
 async fn account_status(
     State(state): State<Arc<AppState>>,
-    jar: CookieJar,
+    headers: HeaderMap,
 ) -> Result<Json<CursorAccountStatus>, ApiError> {
-    ensure_authenticated(&state, &jar)?;
+    ensure_authenticated(&state, &headers)?;
     Ok(Json(state.cursor_account_status()))
 }
 
 async fn auth_flow_status(
     State(state): State<Arc<AppState>>,
-    jar: CookieJar,
+    headers: HeaderMap,
 ) -> Result<Json<CursorAuthFlowStatus>, ApiError> {
-    ensure_authenticated(&state, &jar)?;
+    ensure_authenticated(&state, &headers)?;
     Ok(Json(state.cursor_auth_flow_status()))
 }
 
 async fn get_known_config(
     State(state): State<Arc<AppState>>,
-    jar: CookieJar,
+    headers: HeaderMap,
 ) -> Result<Json<KnownConfig>, ApiError> {
-    ensure_authenticated(&state, &jar)?;
+    ensure_authenticated(&state, &headers)?;
     Ok(Json(state.known_config()?))
 }
 
 async fn update_known_config(
     State(state): State<Arc<AppState>>,
-    jar: CookieJar,
+    headers: HeaderMap,
     Json(payload): Json<KnownConfig>,
 ) -> Result<Json<KnownConfig>, ApiError> {
-    ensure_authenticated(&state, &jar)?;
+    ensure_authenticated(&state, &headers)?;
     Ok(Json(state.update_known_config(payload)?))
 }
 
 async fn get_raw_config(
     State(state): State<Arc<AppState>>,
-    jar: CookieJar,
+    headers: HeaderMap,
 ) -> Result<Json<RawConfigDocument>, ApiError> {
-    ensure_authenticated(&state, &jar)?;
+    ensure_authenticated(&state, &headers)?;
     Ok(Json(state.raw_config()?))
 }
 
 async fn preview_raw_config(
     State(state): State<Arc<AppState>>,
-    jar: CookieJar,
+    headers: HeaderMap,
     Json(payload): Json<RawConfigUpdateRequest>,
 ) -> Result<Json<RawConfigPreview>, ApiError> {
-    ensure_authenticated(&state, &jar)?;
+    ensure_authenticated(&state, &headers)?;
     Ok(Json(state.preview_raw_config(payload.content)?))
 }
 
 async fn confirm_raw_config(
     State(state): State<Arc<AppState>>,
-    jar: CookieJar,
+    headers: HeaderMap,
     Json(payload): Json<RawConfigUpdateRequest>,
 ) -> Result<Json<RawConfigDocument>, ApiError> {
-    ensure_authenticated(&state, &jar)?;
+    ensure_authenticated(&state, &headers)?;
     Ok(Json(state.save_raw_config(payload.content)?))
 }
 
 async fn list_skills(
     State(state): State<Arc<AppState>>,
-    jar: CookieJar,
+    headers: HeaderMap,
 ) -> Result<Json<Vec<SkillSummary>>, ApiError> {
-    ensure_authenticated(&state, &jar)?;
+    ensure_authenticated(&state, &headers)?;
     Ok(Json(state.list_skills()?))
+}
+
+async fn list_skill_files(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(folder_id): Path<String>,
+) -> Result<Json<Vec<SkillFileSummary>>, ApiError> {
+    ensure_authenticated(&state, &headers)?;
+    Ok(Json(state.list_skill_files(&folder_id)?))
 }
 
 async fn get_skill(
     State(state): State<Arc<AppState>>,
-    jar: CookieJar,
-    Path(name): Path<String>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
 ) -> Result<Json<SkillDocument>, ApiError> {
-    ensure_authenticated(&state, &jar)?;
-    Ok(Json(state.read_skill(&name)?))
+    ensure_authenticated(&state, &headers)?;
+    Ok(Json(state.read_skill(&id)?))
 }
 
 async fn update_skill(
     State(state): State<Arc<AppState>>,
-    jar: CookieJar,
-    Path(name): Path<String>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
     Json(payload): Json<SkillUpdateRequest>,
 ) -> Result<Json<SkillDocument>, ApiError> {
-    ensure_authenticated(&state, &jar)?;
-    Ok(Json(state.update_skill(&name, &payload.content)?))
+    ensure_authenticated(&state, &headers)?;
+    Ok(Json(state.update_skill(&id, &payload.content)?))
 }
 
-async fn delete_skill(
-    State(state): State<Arc<AppState>>,
-    jar: CookieJar,
-    Path(name): Path<String>,
-) -> Result<Json<ActionMessage>, ApiError> {
-    ensure_authenticated(&state, &jar)?;
-    Ok(Json(state.delete_skill(&name)?))
-}
-
-fn ensure_authenticated(state: &AppState, jar: &CookieJar) -> Result<(), ApiError> {
-    if is_authenticated(state, jar) {
+fn ensure_authenticated(state: &AppState, headers: &HeaderMap) -> Result<(), ApiError> {
+    if is_authenticated(state, headers) {
         Ok(())
     } else {
         Err(ApiError::new(
@@ -287,10 +344,32 @@ fn ensure_authenticated(state: &AppState, jar: &CookieJar) -> Result<(), ApiErro
     }
 }
 
-fn is_authenticated(state: &AppState, jar: &CookieJar) -> bool {
-    let Some(cookie) = jar.get(SESSION_COOKIE_NAME) else {
-        return false;
-    };
+fn is_authenticated(state: &AppState, headers: &HeaderMap) -> bool {
+    extract_session_token(headers)
+        .as_deref()
+        .map(|session_token| state.is_authenticated(session_token))
+        .unwrap_or(false)
+}
 
-    state.is_authenticated(cookie.value())
+fn extract_session_token(headers: &HeaderMap) -> Option<String> {
+    let cookie_header = headers.get(axum::http::header::COOKIE)?.to_str().ok()?;
+
+    cookie_header.split(';').find_map(|part| {
+        let trimmed = part.trim();
+        let (name, value) = trimmed.split_once('=')?;
+
+        if name == SESSION_COOKIE_NAME {
+            Some(value.to_string())
+        } else {
+            None
+        }
+    })
+}
+
+fn build_session_cookie(session_token: &str) -> String {
+    format!("{SESSION_COOKIE_NAME}={session_token}; Path=/; HttpOnly; SameSite=Lax")
+}
+
+fn clear_session_cookie() -> String {
+    format!("{SESSION_COOKIE_NAME}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0")
 }

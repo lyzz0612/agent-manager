@@ -1,4 +1,4 @@
-import { FormEvent, useEffect, useMemo, useState } from "react";
+import { Dispatch, FormEvent, SetStateAction, useEffect, useMemo, useState } from "react";
 
 type AppStatus = {
   app_name: string;
@@ -10,16 +10,11 @@ type SessionStatus = {
   authenticated: boolean;
 };
 
-type CursorRuntimeStatus = {
-  installed: boolean;
-  version: string | null;
-  managed_root: string;
-};
-
 type RuntimeActionResult = {
   installed: boolean;
   version: string | null;
-  managed_root: string;
+  install_dir: string;
+  data_dir: string;
   message: string;
 };
 
@@ -57,24 +52,107 @@ type RawConfigPreview = {
   next_content: string;
 };
 
-type SkillSummary = {
+type AgentSummary = {
+  id: string;
   name: string;
+  installed: boolean;
+  version: string | null;
+  install_dir: string;
+  data_dir: string;
+  install_supported: boolean;
+  install_command: string | null;
+};
+
+type SkillSummary = {
+  id: string;
+  name: string;
+  agent: string;
+  path: string;
+};
+
+type SkillFileSummary = {
+  id: string;
+  name: string;
+  agent: string;
+  folder: string;
   path: string;
 };
 
 type SkillDocument = {
+  id: string;
   name: string;
+  agent: string;
   path: string;
   content: string;
 };
 
 type MessageKind = "info" | "success" | "error";
 
+type AppSettings = {
+  app_name: string;
+  version: string;
+  mode: string;
+  repo_root: string;
+  update_supported: boolean;
+  git_remote: string | null;
+  git_branch: string | null;
+  git_commit: string | null;
+  git_upstream_commit: string | null;
+  update_available: boolean;
+  behind_commits: number;
+};
+
+type AppUpdateResult = {
+  success: boolean;
+  message: string;
+  output: string;
+  version: string;
+  git_commit: string | null;
+  restart_required: boolean;
+};
+
+type PageId = "overview" | "agents" | "skills" | "settings";
+
+type SkillScope = "common" | string;
+
+const NAV_ITEMS: { id: PageId; label: string }[] = [
+  { id: "overview", label: "概览" },
+  { id: "agents", label: "Agents" },
+  { id: "skills", label: "Skills" },
+  { id: "settings", label: "设置" },
+];
+
+const PAGE_TITLES: Record<PageId, string> = {
+  overview: "概览",
+  agents: "Agents",
+  skills: "Skills",
+  settings: "设置",
+};
+
 const defaultKnownConfig: KnownConfig = {
   disable_telemetry: false,
   auto_update: true,
   release_track: "stable",
 };
+
+const CURSOR_CLI_INSTALL_COMMAND_WINDOWS =
+  "irm 'https://cursor.com/install?win32=true' | iex";
+const CURSOR_CLI_INSTALL_COMMAND_UNIX = "curl https://cursor.com/install -fsS | bash";
+
+function resolveInstallCommand(agent: AgentSummary): string {
+  if (agent.install_command) {
+    return agent.install_command;
+  }
+
+  if (agent.id !== "cursor") {
+    return "";
+  }
+
+  const isWindows =
+    typeof navigator !== "undefined" && /Windows/i.test(navigator.userAgent);
+
+  return isWindows ? CURSOR_CLI_INSTALL_COMMAND_WINDOWS : CURSOR_CLI_INSTALL_COMMAND_UNIX;
+}
 
 async function requestJson<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(path, {
@@ -109,9 +187,11 @@ export default function App() {
   const [loginToken, setLoginToken] = useState("");
   const [message, setMessage] = useState<{ kind: MessageKind; text: string } | null>(null);
   const [loading, setLoading] = useState(true);
+  const [activePage, setActivePage] = useState<PageId>("overview");
 
   const [appStatus, setAppStatus] = useState<AppStatus | null>(null);
-  const [runtimeStatus, setRuntimeStatus] = useState<CursorRuntimeStatus | null>(null);
+  const [agents, setAgents] = useState<AgentSummary[]>([]);
+  const [selectedAgentId, setSelectedAgentId] = useState<string | null>(null);
   const [accountStatus, setAccountStatus] = useState<CursorAccountStatus | null>(null);
   const [authFlow, setAuthFlow] = useState<CursorAuthFlowStatus | null>(null);
   const [knownConfig, setKnownConfig] = useState<KnownConfig>(defaultKnownConfig);
@@ -119,26 +199,76 @@ export default function App() {
   const [rawDraft, setRawDraft] = useState("");
   const [rawPreview, setRawPreview] = useState<RawConfigPreview | null>(null);
   const [skills, setSkills] = useState<SkillSummary[]>([]);
-  const [selectedSkillName, setSelectedSkillName] = useState("");
+  const [skillScope, setSkillScope] = useState<SkillScope>("common");
+  const [selectedSkillFolderId, setSelectedSkillFolderId] = useState<string | null>(null);
+  const [skillFiles, setSkillFiles] = useState<SkillFileSummary[]>([]);
+  const [selectedSkillFileId, setSelectedSkillFileId] = useState<string | null>(null);
   const [selectedSkill, setSelectedSkill] = useState<SkillDocument | null>(null);
   const [skillDraft, setSkillDraft] = useState("");
+  const [appSettings, setAppSettings] = useState<AppSettings | null>(null);
+  const [updateOutput, setUpdateOutput] = useState("");
+  const [checkingUpdate, setCheckingUpdate] = useState(false);
+  const [pullingUpdate, setPullingUpdate] = useState(false);
 
-  const selectedSkillSummary = useMemo(
-    () => skills.find((item) => item.name === selectedSkillName) ?? null,
-    [skills, selectedSkillName],
+  const skillScopeTabs = useMemo(
+    () => [
+      { id: "common" as const, label: "通用" },
+      ...agents.map((agent) => ({ id: agent.id, label: agent.name })),
+    ],
+    [agents],
   );
+
+  const scopedSkills = useMemo(
+    () => skills.filter((skill) => skill.agent === skillScope),
+    [skills, skillScope],
+  );
+
+  const selectedAgent = useMemo(
+    () => agents.find((agent) => agent.id === selectedAgentId) ?? null,
+    [agents, selectedAgentId],
+  );
+
+  const mainTitle = useMemo(() => {
+    if (activePage === "agents" && selectedAgent) {
+      return selectedAgent.name;
+    }
+    return PAGE_TITLES[activePage];
+  }, [activePage, selectedAgent]);
 
   useEffect(() => {
     void bootstrap();
   }, []);
 
   useEffect(() => {
-    if (!authenticated || !selectedSkillName) {
+    if (activePage !== "agents") {
+      setSelectedAgentId(null);
+    }
+  }, [activePage]);
+
+  useEffect(() => {
+    if (!authenticated || !selectedSkillFolderId) {
+      setSkillFiles([]);
       return;
     }
 
-    void loadSkill(selectedSkillName);
-  }, [authenticated, selectedSkillName]);
+    void loadSkillFiles(selectedSkillFolderId);
+  }, [authenticated, selectedSkillFolderId]);
+
+  useEffect(() => {
+    if (!authenticated || !selectedSkillFileId) {
+      return;
+    }
+
+    void loadSkill(selectedSkillFileId);
+  }, [authenticated, selectedSkillFileId]);
+
+  useEffect(() => {
+    if (!authenticated || activePage !== "settings") {
+      return;
+    }
+
+    void loadAppSettings();
+  }, [authenticated, activePage]);
 
   async function bootstrap() {
     setLoading(true);
@@ -162,23 +292,17 @@ export default function App() {
   }
 
   async function loadDashboard() {
-    const [
-      runtime,
-      account,
-      flow,
-      nextKnownConfig,
-      nextRawConfig,
-      nextSkills,
-    ] = await Promise.all([
-      requestJson<CursorRuntimeStatus>("/api/cursor/runtime"),
-      requestJson<CursorAccountStatus>("/api/cursor/account"),
-      requestJson<CursorAuthFlowStatus>("/api/cursor/auth-flow"),
-      requestJson<KnownConfig>("/api/profile/known-config"),
-      requestJson<RawConfigDocument>("/api/profile/raw-config"),
-      requestJson<SkillSummary[]>("/api/profile/skills"),
-    ]);
+    const [nextAgents, account, flow, nextKnownConfig, nextRawConfig, nextSkills] =
+      await Promise.all([
+        requestJson<AgentSummary[]>("/api/agents"),
+        requestJson<CursorAccountStatus>("/api/cursor/account"),
+        requestJson<CursorAuthFlowStatus>("/api/cursor/auth-flow"),
+        requestJson<KnownConfig>("/api/profile/known-config"),
+        requestJson<RawConfigDocument>("/api/profile/raw-config"),
+        requestJson<SkillSummary[]>("/api/profile/skills"),
+      ]);
 
-    setRuntimeStatus(runtime);
+    setAgents(nextAgents);
     setAccountStatus(account);
     setAuthFlow(flow);
     setKnownConfig(nextKnownConfig);
@@ -187,14 +311,101 @@ export default function App() {
     setRawPreview(null);
     setSkills(nextSkills);
 
-    const nextSelected = nextSkills[0]?.name ?? "";
-    setSelectedSkillName((current) =>
-      current && nextSkills.some((item) => item.name === current) ? current : nextSelected,
-    );
+    setSelectedAgentId((current) => {
+      if (current && nextAgents.some((agent) => agent.id === current && agent.installed)) {
+        return current;
+      }
+      return null;
+    });
 
-    if (!nextSelected) {
+    setSelectedSkillFolderId((current) => {
+      if (current && nextSkills.some((item) => item.id === current)) {
+        return current;
+      }
+      setSkillFiles([]);
+      setSelectedSkillFileId(null);
       setSelectedSkill(null);
       setSkillDraft("");
+      return null;
+    });
+  }
+
+  async function loadAppSettings() {
+    try {
+      const settings = await requestJson<AppSettings>("/api/app/settings");
+      setAppSettings(settings);
+      setAppStatus((current) =>
+        current
+          ? { ...current, version: settings.version, mode: settings.mode }
+          : {
+              app_name: settings.app_name,
+              version: settings.version,
+              mode: settings.mode,
+            },
+      );
+    } catch (error) {
+      notify("error", getErrorMessage(error));
+    }
+  }
+
+  async function checkForUpdates() {
+    setCheckingUpdate(true);
+    try {
+      const settings = await requestJson<AppSettings>("/api/app/update/check", {
+        method: "POST",
+      });
+      setAppSettings(settings);
+      if (settings.update_available) {
+        notify(
+          "info",
+          `发现 ${settings.behind_commits} 个新提交（${settings.git_upstream_commit ?? "远程"}）。`,
+        );
+      } else {
+        notify("success", "当前已是最新版本。");
+      }
+    } catch (error) {
+      notify("error", getErrorMessage(error));
+    } finally {
+      setCheckingUpdate(false);
+    }
+  }
+
+  async function pullUpdates() {
+    if (
+      !window.confirm(
+        "将从 GitHub 拉取最新代码并重新构建前端与后端，完成后需要手动重启服务。继续吗？",
+      )
+    ) {
+      return;
+    }
+
+    setPullingUpdate(true);
+    setUpdateOutput("");
+    try {
+      const result = await requestJson<AppUpdateResult>("/api/app/update/pull", {
+        method: "POST",
+      });
+      setUpdateOutput(result.output);
+      setAppSettings((current) =>
+        current
+          ? {
+              ...current,
+              version: result.version,
+              git_commit: result.git_commit,
+              update_available: false,
+              behind_commits: 0,
+              git_upstream_commit: result.git_commit,
+            }
+          : current,
+      );
+      setAppStatus((current) =>
+        current ? { ...current, version: result.version } : current,
+      );
+      notify(result.success ? "success" : "error", result.message);
+    } catch (error) {
+      notify("error", getErrorMessage(error));
+    } finally {
+      setPullingUpdate(false);
     }
   }
 
@@ -215,20 +426,80 @@ export default function App() {
     }
   }
 
-  async function handleRuntimeAction(path: string) {
+  async function handleAgentAction(
+    agentId: string,
+    action: "install" | "upgrade" | "uninstall",
+    agentName?: string,
+  ) {
+    if (
+      action === "uninstall" &&
+      !window.confirm(`确认卸载 ${agentName ?? agentId} 吗？将移除 CLI，但保留用户目录数据。`)
+    ) {
+      return;
+    }
+
     try {
-      const result = await requestJson<RuntimeActionResult>(path, {
-        method: "POST",
-      });
-      setRuntimeStatus({
-        installed: result.installed,
-        version: result.version,
-        managed_root: result.managed_root,
-      });
+      const result = await requestJson<RuntimeActionResult>(
+        `/api/agents/${encodeURIComponent(agentId)}/${action}`,
+        { method: "POST" },
+      );
+      setAgents((current) =>
+        current.map((agent) =>
+          agent.id === agentId
+            ? {
+                ...agent,
+                installed: result.installed,
+                version: result.version,
+                install_dir: result.install_dir,
+                data_dir: result.data_dir,
+              }
+            : agent,
+        ),
+      );
+      if (action === "uninstall" && !result.installed) {
+        setSelectedAgentId(null);
+      }
+      if (action === "install" && result.installed) {
+        setSelectedAgentId(agentId);
+      }
       notify("success", result.message);
     } catch (error) {
       notify("error", getErrorMessage(error));
     }
+  }
+
+  function openAgentDetail(agentId: string) {
+    const agent = agents.find((item) => item.id === agentId);
+    if (agent?.installed) {
+      setSelectedAgentId(agentId);
+    }
+  }
+
+  function backToAgentList() {
+    setSelectedAgentId(null);
+  }
+
+  function switchSkillScope(nextScope: SkillScope) {
+    setSkillScope(nextScope);
+    setSelectedSkillFolderId(null);
+    setSkillFiles([]);
+    setSelectedSkillFileId(null);
+    setSelectedSkill(null);
+    setSkillDraft("");
+  }
+
+  function backToSkillFolders() {
+    setSelectedSkillFolderId(null);
+    setSkillFiles([]);
+    setSelectedSkillFileId(null);
+    setSelectedSkill(null);
+    setSkillDraft("");
+  }
+
+  function backToSkillFiles() {
+    setSelectedSkillFileId(null);
+    setSelectedSkill(null);
+    setSkillDraft("");
   }
 
   async function saveKnownConfig() {
@@ -280,10 +551,33 @@ export default function App() {
     }
   }
 
-  async function loadSkill(name: string) {
+  async function loadSkillFiles(folderId: string) {
+    try {
+      const result = await requestJson<SkillFileSummary[]>(
+        `/api/profile/skills/${encodeURIComponent(folderId)}/files`,
+      );
+      setSkillFiles(result);
+      setSelectedSkillFileId((current) => {
+        if (current && result.some((item) => item.id === current)) {
+          return current;
+        }
+        setSelectedSkill(null);
+        setSkillDraft("");
+        return null;
+      });
+    } catch (error) {
+      setSkillFiles([]);
+      setSelectedSkillFileId(null);
+      setSelectedSkill(null);
+      setSkillDraft("");
+      notify("error", getErrorMessage(error));
+    }
+  }
+
+  async function loadSkill(id: string) {
     try {
       const result = await requestJson<SkillDocument>(
-        `/api/profile/skills/${encodeURIComponent(name)}`,
+        `/api/profile/skills/${encodeURIComponent(id)}`,
       );
       setSelectedSkill(result);
       setSkillDraft(result.content);
@@ -301,7 +595,7 @@ export default function App() {
 
     try {
       const result = await requestJson<SkillDocument>(
-        `/api/profile/skills/${encodeURIComponent(selectedSkill.name)}`,
+        `/api/profile/skills/${encodeURIComponent(selectedSkill.id)}`,
         {
           method: "PUT",
           body: JSON.stringify({ content: skillDraft }),
@@ -310,23 +604,6 @@ export default function App() {
       setSelectedSkill(result);
       setSkillDraft(result.content);
       notify("success", `已更新 skill: ${result.name}`);
-    } catch (error) {
-      notify("error", getErrorMessage(error));
-    }
-  }
-
-  async function removeSkill() {
-    if (!selectedSkill || !window.confirm(`确认删除 skill "${selectedSkill.name}" 吗？`)) {
-      return;
-    }
-
-    try {
-      const result = await requestJson<{ message: string }>(
-        `/api/profile/skills/${encodeURIComponent(selectedSkill.name)}`,
-        { method: "DELETE" },
-      );
-      notify("success", result.message);
-      await loadDashboard();
     } catch (error) {
       notify("error", getErrorMessage(error));
     }
@@ -342,13 +619,13 @@ export default function App() {
 
   if (!authenticated) {
     return (
-      <main className="page login-page">
+      <main className="login-page">
         <section className="panel hero">
           <p className="eyebrow">Cursor VPS Manager</p>
           <h1>使用固定访问 Token 进入管理页</h1>
           <p className="muted">
             生产环境需要显式设置 <code>ADMIN_TOKEN</code>，开发态默认使用
-            <code>dev-agent-manager-token</code>。
+            <code> dev-agent-manager-token</code>。
           </p>
         </section>
 
@@ -374,217 +651,589 @@ export default function App() {
   }
 
   return (
-    <main className="page">
-      <header className="page-header">
-        <div>
-          <p className="eyebrow">agent-manager</p>
-          <h1>Cursor Runtime 管理控制台</h1>
-          <p className="muted">
-            面向单用户 VPS 的最小管理器，统一管理登录、运行时、配置与已有 skill。
+    <div className="app-shell">
+      <aside className="sidebar">
+        <div className="sidebar__brand">
+          <h1>agent-manager</h1>
+          <p>
+            v{appStatus?.version} · {appStatus?.mode}
           </p>
         </div>
-        <button className="secondary" onClick={() => void loadDashboard()}>
-          刷新状态
-        </button>
-      </header>
 
-      {message ? <StatusBanner {...message} /> : null}
-
-      <section className="grid two-columns">
-        <Panel title="应用状态">
-          <InfoRow label="应用名" value={appStatus?.app_name ?? "-"} />
-          <InfoRow label="版本" value={appStatus?.version ?? "-"} />
-          <InfoRow label="模式" value={appStatus?.mode ?? "-"} />
-        </Panel>
-
-        <Panel title="运行时状态">
-          <InfoRow label="安装状态" value={runtimeStatus?.installed ? "已安装" : "未安装"} />
-          <InfoRow label="当前版本" value={runtimeStatus?.version ?? "未检测到"} />
-          <InfoRow label="受管目录" value={runtimeStatus?.managed_root ?? "-"} />
-          <div className="actions">
+        <nav className="sidebar__nav">
+          {NAV_ITEMS.map((item) => (
             <button
-              className="primary"
-              onClick={() => void handleRuntimeAction("/api/cursor/runtime/install")}
+              key={item.id}
+              className={activePage === item.id ? "nav-item active" : "nav-item"}
+              onClick={() => setActivePage(item.id)}
+              type="button"
             >
-              安装最新版
+              {item.label}
             </button>
-            <button
-              className="secondary"
-              onClick={() => void handleRuntimeAction("/api/cursor/runtime/upgrade")}
-            >
-              手动升级
-            </button>
-          </div>
-        </Panel>
-      </section>
+          ))}
+        </nav>
 
-      <section className="grid two-columns">
-        <Panel title="Cursor 账号状态">
-          <InfoRow label="登录状态" value={accountStatus?.logged_in ? "已登录" : "未登录"} />
-          <InfoRow label="邮箱" value={accountStatus?.email ?? "暂不可得"} />
-          <InfoRow label="显示名" value={accountStatus?.display_name ?? "暂不可得"} />
-          <p className="muted">{accountStatus?.note}</p>
-        </Panel>
+        <div className="sidebar__footer">
+          <button className="nav-item" onClick={() => void loadDashboard()} type="button">
+            刷新数据
+          </button>
+        </div>
+      </aside>
 
-        <Panel title="网页登录引导">
-          <p className="muted">{authFlow?.summary}</p>
-          <ol className="steps">
-            {authFlow?.steps.map((step) => (
-              <li key={step.title}>
-                <strong>{step.title}</strong>
-                <span>{step.detail}</span>
-              </li>
-            ))}
-          </ol>
-        </Panel>
-      </section>
+      <div className="main">
+        <header className="main-header">
+          <h2>{mainTitle}</h2>
+        </header>
 
-      <section className="grid two-columns">
-        <Panel title="已知配置项表单">
-          <div className="stack">
-            <label className="checkbox">
-              <input
-                checked={knownConfig.disable_telemetry}
-                onChange={(event) =>
-                  setKnownConfig((current) => ({
-                    ...current,
-                    disable_telemetry: event.target.checked,
-                  }))
-                }
-                type="checkbox"
-              />
-              <span>关闭遥测</span>
-            </label>
+        {message ? <StatusBanner {...message} /> : null}
 
-            <label className="checkbox">
-              <input
-                checked={knownConfig.auto_update}
-                onChange={(event) =>
-                  setKnownConfig((current) => ({
-                    ...current,
-                    auto_update: event.target.checked,
-                  }))
-                }
-                type="checkbox"
-              />
-              <span>允许自动更新</span>
-            </label>
-
-            <label className="field">
-              <span>发布通道</span>
-              <select
-                value={knownConfig.release_track}
-                onChange={(event) =>
-                  setKnownConfig((current) => ({
-                    ...current,
-                    release_track: event.target.value,
-                  }))
-                }
-              >
-                <option value="stable">stable</option>
-                <option value="latest">latest</option>
-              </select>
-            </label>
-
-            <button className="primary" onClick={() => void saveKnownConfig()}>
-              保存已知配置
-            </button>
-          </div>
-        </Panel>
-
-        <Panel title="原始配置文件">
-          <p className="muted">未知字段不进表单，统一在原始 JSON 中预览后保存。</p>
-          <div className="code-meta">
-            <span>{rawConfig?.path ?? "-"}</span>
-            <button className="ghost" onClick={() => void refreshRawConfig()}>
-              重新加载
-            </button>
-          </div>
-          <textarea
-            className="editor"
-            value={rawDraft}
-            onChange={(event) => setRawDraft(event.target.value)}
-          />
-          <div className="actions">
-            <button className="secondary" onClick={() => void previewRawConfig()}>
-              预览保存
-            </button>
-            <button
-              className="primary"
-              disabled={!rawPreview}
-              onClick={() => void confirmRawConfig()}
-            >
-              确认写入
-            </button>
-          </div>
-          {rawPreview ? (
-            <div className="preview-box">
-              <p className="preview-title">预览内容</p>
-              <pre>{rawPreview.next_content}</pre>
-            </div>
-          ) : null}
-        </Panel>
-      </section>
-
-      <section className="grid two-columns">
-        <Panel title="已有 user 级 skill">
-          <div className="stack">
-            <label className="field">
-              <span>选择 skill</span>
-              <select
-                value={selectedSkillName}
-                onChange={(event) => setSelectedSkillName(event.target.value)}
-              >
-                {skills.length === 0 ? <option value="">暂无 skill</option> : null}
-                {skills.map((skill) => (
-                  <option key={skill.name} value={skill.name}>
-                    {skill.name}
-                  </option>
+        <main className="main-body">
+        {activePage === "overview" ? (
+          <>
+            <Panel title="应用状态">
+              <InfoRow label="应用名" value={appStatus?.app_name ?? "-"} />
+              <InfoRow label="版本" value={appStatus?.version ?? "-"} />
+              <InfoRow label="模式" value={appStatus?.mode ?? "-"} />
+            </Panel>
+            <Panel title="Agents 摘要">
+              {agents.map((agent) => (
+                  <InfoRow
+                    key={agent.id}
+                    label={agent.name}
+                    value={
+                      agent.installed
+                        ? `已安装 · ${agent.version ?? "版本未知"}`
+                        : "未安装"
+                    }
+                  />
                 ))}
-              </select>
-            </label>
-            <div className="skill-list">
-              {skills.map((skill) => (
+            </Panel>
+            <Panel title="Cursor CLI 账号摘要">
+              <InfoRow label="登录状态" value={accountStatus?.logged_in ? "已登录" : "未登录"} />
+              <InfoRow label="邮箱" value={accountStatus?.email ?? "暂不可得"} />
+              <InfoRow label="显示名" value={accountStatus?.display_name ?? "暂不可得"} />
+            </Panel>
+          </>
+        ) : null}
+
+        {activePage === "agents" ? (
+          selectedAgent ? (
+            <AgentDetailView
+              agent={selectedAgent}
+              accountStatus={accountStatus}
+              authFlow={authFlow}
+              knownConfig={knownConfig}
+              rawConfig={rawConfig}
+              rawDraft={rawDraft}
+              rawPreview={rawPreview}
+              onBack={backToAgentList}
+              onAction={handleAgentAction}
+              onKnownConfigChange={setKnownConfig}
+              onRawDraftChange={setRawDraft}
+              onSaveKnownConfig={() => void saveKnownConfig()}
+              onRefreshRawConfig={() => void refreshRawConfig()}
+              onPreviewRawConfig={() => void previewRawConfig()}
+              onConfirmRawConfig={() => void confirmRawConfig()}
+            />
+          ) : (
+            <Panel title="支持的 Agents">
+              <div className="agent-grid">
+                {agents.map((agent) => (
+                  <article
+                    key={agent.id}
+                    className={
+                      agent.installed ? "agent-card agent-card--clickable" : "agent-card"
+                    }
+                    onClick={agent.installed ? () => openAgentDetail(agent.id) : undefined}
+                    onKeyDown={
+                      agent.installed
+                        ? (event) => {
+                            if (event.key === "Enter" || event.key === " ") {
+                              event.preventDefault();
+                              openAgentDetail(agent.id);
+                            }
+                          }
+                        : undefined
+                    }
+                    role={agent.installed ? "button" : undefined}
+                    tabIndex={agent.installed ? 0 : undefined}
+                  >
+                    <div className="agent-card__header">
+                      <h3 className="agent-card__name">{agent.name}</h3>
+                      <span
+                        className={
+                          agent.installed
+                            ? "agent-card__badge agent-card__badge--installed"
+                            : "agent-card__badge"
+                        }
+                      >
+                        {agent.installed ? "已安装" : "未安装"}
+                      </span>
+                    </div>
+                    {agent.installed ? (
+                      <dl className="agent-card__meta">
+                        <div>
+                          <dt>安装目录</dt>
+                          <dd className="agent-card__path">{agent.install_dir}</dd>
+                        </div>
+                        <div>
+                          <dt>CLI 版本</dt>
+                          <dd>{agent.version ?? "-"}</dd>
+                        </div>
+                      </dl>
+                    ) : (
+                      <div className="agent-card__install-cmd">
+                        <p className="agent-card__install-label">安装命令</p>
+                        <code>{resolveInstallCommand(agent)}</code>
+                      </div>
+                    )}
+                    <div className="actions agent-card__actions">
+                      {agent.installed ? (
+                        <>
+                          <button
+                            className="secondary"
+                            disabled={!agent.install_supported}
+                            onClick={(event) => {
+                              event.stopPropagation();
+                              void handleAgentAction(agent.id, "upgrade", agent.name);
+                            }}
+                            type="button"
+                          >
+                            升级
+                          </button>
+                          <button
+                            className="danger"
+                            disabled={!agent.install_supported}
+                            onClick={(event) => {
+                              event.stopPropagation();
+                              void handleAgentAction(agent.id, "uninstall", agent.name);
+                            }}
+                            type="button"
+                          >
+                            卸载
+                          </button>
+                        </>
+                      ) : (
+                        <button
+                          className="primary"
+                          disabled={!agent.install_supported}
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            void handleAgentAction(agent.id, "install", agent.name);
+                          }}
+                          type="button"
+                        >
+                          安装
+                        </button>
+                      )}
+                    </div>
+                    {agent.installed ? (
+                      <p className="agent-card__hint muted">点击卡片进入详情</p>
+                    ) : null}
+                  </article>
+                ))}
+              </div>
+            </Panel>
+          )
+        ) : null}
+
+        {activePage === "skills" ? (
+          <Panel title="Skills">
+            <div className="skills-layout">
+              <nav className="scope-tabs" role="tablist">
+                {skillScopeTabs.map((tab) => (
+                  <button
+                    key={tab.id}
+                    className={skillScope === tab.id ? "scope-tab active" : "scope-tab"}
+                    onClick={() => switchSkillScope(tab.id)}
+                    type="button"
+                  >
+                    {tab.label}
+                  </button>
+                ))}
+              </nav>
+
+              <div className="skills-content">
+                {selectedSkillFileId && selectedSkill ? (
+                  <>
+                    <div className="detail-header">
+                      <button className="ghost" onClick={backToSkillFiles} type="button">
+                        ← 返回文件列表
+                      </button>
+                      <h3>{selectedSkill.name}</h3>
+                    </div>
+                    <div className="code-meta">
+                      <span>{selectedSkill.path}</span>
+                    </div>
+                    <textarea
+                      className="editor"
+                      value={skillDraft}
+                      onChange={(event) => setSkillDraft(event.target.value)}
+                    />
+                    <div className="actions">
+                      <button className="primary" onClick={() => void saveSkill()}>
+                        保存
+                      </button>
+                    </div>
+                  </>
+                ) : selectedSkillFolderId ? (
+                  <>
+                    <div className="detail-header">
+                      <button className="ghost" onClick={backToSkillFolders} type="button">
+                        ← 返回文件夹列表
+                      </button>
+                      <h3>
+                        {scopedSkills.find((skill) => skill.id === selectedSkillFolderId)?.name ??
+                          selectedSkillFolderId}
+                      </h3>
+                    </div>
+                    <div className="skill-list-items">
+                      {skillFiles.length === 0 ? (
+                        <p className="empty-hint">该 skill 文件夹内暂无文件。</p>
+                      ) : (
+                        skillFiles.map((file) => (
+                          <button
+                            key={file.id}
+                            className="skill-list-item"
+                            onClick={() => setSelectedSkillFileId(file.id)}
+                            type="button"
+                          >
+                            <span>{file.name}</span>
+                            <span className="skill-list-item__path">{file.path}</span>
+                          </button>
+                        ))
+                      )}
+                    </div>
+                  </>
+                ) : (
+                  <div className="skill-list-items">
+                    {scopedSkills.length === 0 ? (
+                      <p className="empty-hint">当前分类下暂无 skill 文件夹。</p>
+                    ) : (
+                      scopedSkills.map((skill) => (
+                        <button
+                          key={skill.id}
+                          className="skill-list-item skill-list-item--folder"
+                          onClick={() => setSelectedSkillFolderId(skill.id)}
+                          type="button"
+                        >
+                          <span>{skill.name}</span>
+                          <span className="skill-list-item__path">{skill.path}</span>
+                        </button>
+                      ))
+                    )}
+                  </div>
+                )}
+              </div>
+            </div>
+          </Panel>
+        ) : null}
+
+        {activePage === "settings" ? (
+          <>
+            <Panel title="应用信息">
+              <InfoRow label="应用名" value={appSettings?.app_name ?? appStatus?.app_name ?? "-"} />
+              <InfoRow label="版本" value={appSettings?.version ?? appStatus?.version ?? "-"} />
+              <InfoRow label="模式" value={appSettings?.mode ?? appStatus?.mode ?? "-"} />
+              <InfoRow label="仓库目录" value={appSettings?.repo_root ?? "-"} />
+            </Panel>
+
+            <Panel title="GitHub 更新">
+              {appSettings?.update_supported ? (
+                <>
+                  <InfoRow label="远程仓库" value={appSettings.git_remote ?? "-"} />
+                  <InfoRow label="当前分支" value={appSettings.git_branch ?? "-"} />
+                  <InfoRow label="本地提交" value={appSettings.git_commit ?? "-"} />
+                  <InfoRow
+                    label="远程提交"
+                    value={appSettings.git_upstream_commit ?? "尚未检查"}
+                  />
+                  <InfoRow
+                    label="更新状态"
+                    value={
+                      appSettings.update_available
+                        ? `有 ${appSettings.behind_commits} 个新提交可拉取`
+                        : "已是最新（基于上次检查）"
+                    }
+                  />
+                  <div className="actions">
+                    <button
+                      className="secondary"
+                      disabled={checkingUpdate || pullingUpdate}
+                      onClick={() => void checkForUpdates()}
+                      type="button"
+                    >
+                      {checkingUpdate ? "检查中…" : "检查更新"}
+                    </button>
+                    <button
+                      className="primary"
+                      disabled={checkingUpdate || pullingUpdate}
+                      onClick={() => void pullUpdates()}
+                      type="button"
+                    >
+                      {pullingUpdate ? "更新中…" : "拉取并构建"}
+                    </button>
+                  </div>
+                  <p className="muted">
+                    将执行 git pull、npm run build:web 和 cargo build。完成后请重启 agent-manager
+                    服务。
+                  </p>
+                  {updateOutput ? (
+                    <div className="update-log">
+                      <p className="update-log__title">命令输出</p>
+                      <pre>{updateOutput}</pre>
+                    </div>
+                  ) : null}
+                </>
+              ) : (
+                <p className="muted">
+                  当前运行目录不是 Git 仓库，无法从 GitHub 拉取更新。请在克隆的仓库目录中启动服务，或通过
+                  REPO_ROOT 指定仓库路径。
+                </p>
+              )}
+            </Panel>
+          </>
+        ) : null}
+        </main>
+      </div>
+    </div>
+  );
+}
+
+type AgentDetailTabId = "overview" | "account" | "config";
+
+const AGENT_DETAIL_TABS: { id: AgentDetailTabId; label: string; cursorOnly?: boolean }[] = [
+  { id: "overview", label: "概览" },
+  { id: "account", label: "账号", cursorOnly: true },
+  { id: "config", label: "配置", cursorOnly: true },
+];
+
+function AgentDetailView(props: {
+  agent: AgentSummary;
+  accountStatus: CursorAccountStatus | null;
+  authFlow: CursorAuthFlowStatus | null;
+  knownConfig: KnownConfig;
+  rawConfig: RawConfigDocument | null;
+  rawDraft: string;
+  rawPreview: RawConfigPreview | null;
+  onBack: () => void;
+  onAction: (
+    agentId: string,
+    action: "install" | "upgrade" | "uninstall",
+    agentName?: string,
+  ) => Promise<void>;
+  onKnownConfigChange: Dispatch<SetStateAction<KnownConfig>>;
+  onRawDraftChange: (value: string) => void;
+  onSaveKnownConfig: () => void;
+  onRefreshRawConfig: () => void;
+  onPreviewRawConfig: () => void;
+  onConfirmRawConfig: () => void;
+}) {
+  const {
+    agent,
+    accountStatus,
+    authFlow,
+    knownConfig,
+    rawConfig,
+    rawDraft,
+    rawPreview,
+    onBack,
+    onAction,
+    onKnownConfigChange,
+    onRawDraftChange,
+    onSaveKnownConfig,
+    onRefreshRawConfig,
+    onPreviewRawConfig,
+    onConfirmRawConfig,
+  } = props;
+
+  const detailTabs = useMemo(
+    () =>
+      AGENT_DETAIL_TABS.filter((tab) => !tab.cursorOnly || agent.id === "cursor"),
+    [agent.id],
+  );
+
+  const [activeTab, setActiveTab] = useState<AgentDetailTabId>("overview");
+
+  useEffect(() => {
+    setActiveTab("overview");
+  }, [agent.id]);
+
+  useEffect(() => {
+    if (!detailTabs.some((tab) => tab.id === activeTab)) {
+      setActiveTab("overview");
+    }
+  }, [activeTab, detailTabs]);
+
+  return (
+    <div className="agent-detail">
+      <div className="detail-header agent-detail-header">
+        <button className="ghost" onClick={onBack} type="button">
+          ← 返回列表
+        </button>
+        <h3>{agent.name}</h3>
+      </div>
+
+      <div className="agent-detail-layout">
+        {detailTabs.length > 1 ? (
+          <nav className="scope-tabs" role="tablist" aria-label={`${agent.name} 详情`}>
+            {detailTabs.map((tab) => (
+              <button
+                key={tab.id}
+                aria-selected={activeTab === tab.id}
+                className={activeTab === tab.id ? "scope-tab active" : "scope-tab"}
+                onClick={() => setActiveTab(tab.id)}
+                role="tab"
+                type="button"
+              >
+                {tab.label}
+              </button>
+            ))}
+          </nav>
+        ) : null}
+
+        <div className="detail-tab-content" role="tabpanel">
+        {activeTab === "overview" ? (
+          <>
+            <Panel title="CLI 运行信息">
+              <InfoRow label="CLI 版本" value={agent.version ?? "-"} />
+              <InfoRow label="安装目录" value={agent.install_dir} />
+              <InfoRow label="数据目录" value={agent.data_dir} />
+            </Panel>
+            <div className="actions">
+              <button
+                className="secondary"
+                disabled={!agent.install_supported}
+                onClick={() => void onAction(agent.id, "upgrade", agent.name)}
+                type="button"
+              >
+                升级
+              </button>
+              <button
+                className="danger"
+                disabled={!agent.install_supported}
+                onClick={() => void onAction(agent.id, "uninstall", agent.name)}
+                type="button"
+              >
+                卸载
+              </button>
+            </div>
+          </>
+        ) : null}
+
+        {activeTab === "account" && agent.id === "cursor" ? (
+          <>
+            <Panel title="Cursor CLI 账号状态">
+              <InfoRow label="登录状态" value={accountStatus?.logged_in ? "已登录" : "未登录"} />
+              <InfoRow label="邮箱" value={accountStatus?.email ?? "暂不可得"} />
+              <InfoRow label="显示名" value={accountStatus?.display_name ?? "暂不可得"} />
+              <p className="muted">{accountStatus?.note}</p>
+            </Panel>
+            <Panel title="网页登录引导">
+              <p className="muted">{authFlow?.summary}</p>
+              <ol className="steps">
+                {authFlow?.steps.map((step) => (
+                  <li key={step.title}>
+                    <strong>{step.title}</strong>
+                    <span>{step.detail}</span>
+                  </li>
+                ))}
+              </ol>
+            </Panel>
+          </>
+        ) : null}
+
+        {activeTab === "config" && agent.id === "cursor" ? (
+          <>
+            <Panel title="Cursor CLI 配置">
+              <div className="stack">
+                <label className="checkbox">
+                  <input
+                    checked={knownConfig.disable_telemetry}
+                    onChange={(event) =>
+                      onKnownConfigChange((current) => ({
+                        ...current,
+                        disable_telemetry: event.target.checked,
+                      }))
+                    }
+                    type="checkbox"
+                  />
+                  <span>关闭遥测</span>
+                </label>
+
+                <label className="checkbox">
+                  <input
+                    checked={knownConfig.auto_update}
+                    onChange={(event) =>
+                      onKnownConfigChange((current) => ({
+                        ...current,
+                        auto_update: event.target.checked,
+                      }))
+                    }
+                    type="checkbox"
+                  />
+                  <span>允许自动更新</span>
+                </label>
+
+                <label className="field">
+                  <span>发布通道</span>
+                  <select
+                    value={knownConfig.release_track}
+                    onChange={(event) =>
+                      onKnownConfigChange((current) => ({
+                        ...current,
+                        release_track: event.target.value,
+                      }))
+                    }
+                  >
+                    <option value="stable">stable</option>
+                    <option value="latest">latest</option>
+                  </select>
+                </label>
+
+                <button className="primary" onClick={onSaveKnownConfig} type="button">
+                  保存已知配置
+                </button>
+              </div>
+            </Panel>
+            <Panel title="原始配置文件">
+              <p className="muted">未知字段不进表单，统一在原始 JSON 中预览后保存。</p>
+              <div className="code-meta">
+                <span>{rawConfig?.path ?? "-"}</span>
+                <button className="ghost" onClick={onRefreshRawConfig} type="button">
+                  重新加载
+                </button>
+              </div>
+              <textarea
+                className="editor"
+                value={rawDraft}
+                onChange={(event) => onRawDraftChange(event.target.value)}
+              />
+              <div className="actions">
+                <button className="secondary" onClick={onPreviewRawConfig} type="button">
+                  预览保存
+                </button>
                 <button
-                  key={skill.name}
-                  className={
-                    skill.name === selectedSkillSummary?.name ? "skill-chip active" : "skill-chip"
-                  }
-                  onClick={() => setSelectedSkillName(skill.name)}
+                  className="primary"
+                  disabled={!rawPreview}
+                  onClick={onConfirmRawConfig}
                   type="button"
                 >
-                  {skill.name}
+                  确认写入
                 </button>
-              ))}
-            </div>
-          </div>
-        </Panel>
-
-        <Panel title="查看 / 编辑 skill">
-          <div className="code-meta">
-            <span>{selectedSkill?.path ?? "未选择 skill"}</span>
-          </div>
-          <textarea
-            className="editor"
-            disabled={!selectedSkill}
-            value={skillDraft}
-            onChange={(event) => setSkillDraft(event.target.value)}
-          />
-          <div className="actions">
-            <button className="primary" disabled={!selectedSkill} onClick={() => void saveSkill()}>
-              保存 skill
-            </button>
-            <button
-              className="secondary"
-              disabled={!selectedSkill}
-              onClick={() => void removeSkill()}
-            >
-              删除 skill
-            </button>
-          </div>
-        </Panel>
-      </section>
-    </main>
+              </div>
+              {rawPreview ? (
+                <div className="preview-box">
+                  <p className="preview-title">预览内容</p>
+                  <pre>{rawPreview.next_content}</pre>
+                </div>
+              ) : null}
+            </Panel>
+          </>
+        ) : null}
+        </div>
+      </div>
+    </div>
   );
 }
 
