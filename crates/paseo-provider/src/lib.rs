@@ -434,7 +434,9 @@ impl PaseoProvider {
             env,
             Some(Duration::from_secs(15)),
         )
-        .context("failed to start Paseo daemon after install/upgrade")
+        .context("failed to start Paseo daemon after install/upgrade")?;
+
+        Ok(())
     }
 
     fn user_env(&self, home: &Path) -> BTreeMap<String, String> {
