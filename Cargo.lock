@@ -42,6 +42,8 @@ dependencies = [
  "host-model",
  "host-proc",
  "paseo-provider",
+ "serde",
+ "serde_json",
  "uuid",
 ]
 

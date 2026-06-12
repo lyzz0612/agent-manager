@@ -7,18 +7,37 @@ use host_fs::{
     COMMON_SKILL_AGENT, SUPPORTED_AGENTS,
 };
 use host_model::{
-    AgentSummary, AuthStep, CursorAccountStatus, CursorAuthFlowStatus,
-    CursorRuntimeStatus, KnownConfig, RawConfigDocument, RawConfigPreview, RuntimeActionResult,
-    SkillDocument, SkillFileSummary, SkillSummary,
+    AgentSummary, AuthStep, CursorAccountStatus, CursorAuthFlowStatus, CursorLoginSessionStatus,
+    CursorLoginStartResult, CursorRuntimeStatus, KnownConfig, RawConfigDocument, RawConfigPreview,
+    RuntimeActionResult, SkillDocument, SkillFileSummary, SkillSummary,
 };
 use host_proc::run_command_with_env;
 use regex::Regex;
 use serde_json::{json, Map, Value};
 use std::collections::BTreeMap;
 use std::fs;
+use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
+use std::sync::{Arc, Mutex, OnceLock};
+use std::time::Duration;
 
 const CURSOR_AGENT_ID: &str = "cursor";
+
+#[derive(Debug, Default)]
+struct CursorLoginSessionState {
+    active: bool,
+    auth_url: Option<String>,
+    message: String,
+    error: Option<String>,
+}
+
+fn login_session() -> Arc<Mutex<CursorLoginSessionState>> {
+    static SESSION: OnceLock<Arc<Mutex<CursorLoginSessionState>>> = OnceLock::new();
+    SESSION
+        .get_or_init(|| Arc::new(Mutex::new(CursorLoginSessionState::default())))
+        .clone()
+}
 
 pub struct CursorProvider;
 
@@ -185,23 +204,107 @@ impl CursorProvider {
 
     pub fn auth_flow_status(&self) -> CursorAuthFlowStatus {
         CursorAuthFlowStatus {
-            summary: "Cursor CLI 登录采用网页引导 + 外部完成关键认证步骤的流程。".to_string(),
+            summary: "点击「开始登录」获取授权链接，在新标签页完成认证后，本页会自动刷新登录状态。".to_string(),
             steps: vec![
                 AuthStep {
                     title: "开始登录".to_string(),
-                    detail: "在用户环境中执行 `agent login` 开始浏览器登录流程。".to_string(),
+                    detail: "点击「开始登录」，系统会在后台执行 `agent login` 并展示授权链接。".to_string(),
                 },
                 AuthStep {
-                    title: "外部完成认证".to_string(),
-                    detail: "如果 CLI 打开浏览器、展示链接或要求完成额外确认，请在外部完成。"
-                        .to_string(),
+                    title: "打开授权链接".to_string(),
+                    detail: "在新标签页打开授权链接，按 Cursor 页面提示完成登录。".to_string(),
                 },
                 AuthStep {
-                    title: "返回管理页确认".to_string(),
-                    detail: "返回管理页后，通过刷新状态或重新检查 `agent status` 确认账号信息。"
-                        .to_string(),
+                    title: "等待确认".to_string(),
+                    detail: "返回本页后无需手动刷新，系统会持续检测登录结果。".to_string(),
                 },
             ],
+        }
+    }
+
+    pub fn start_login(&self) -> CursorLoginStartResult {
+        if !self.agent_runtime_status(CURSOR_AGENT_ID).installed {
+            return CursorLoginStartResult {
+                started: false,
+                already_logged_in: false,
+                auth_url: None,
+                message: "尚未安装 Cursor CLI，无法开始登录。".to_string(),
+            };
+        }
+
+        if self.account_status().logged_in {
+            return CursorLoginStartResult {
+                started: false,
+                already_logged_in: true,
+                auth_url: None,
+                message: "当前已登录 Cursor。".to_string(),
+            };
+        }
+
+        let session = login_session();
+        {
+            let guard = session.lock().expect("cursor login session lock poisoned");
+            if guard.active {
+                return CursorLoginStartResult {
+                    started: true,
+                    already_logged_in: false,
+                    auth_url: guard.auth_url.clone(),
+                    message: guard.message.clone(),
+                };
+            }
+        }
+
+        let home = match user_home_dir() {
+            Ok(home) => home,
+            Err(error) => {
+                return CursorLoginStartResult {
+                    started: false,
+                    already_logged_in: false,
+                    auth_url: None,
+                    message: error.to_string(),
+                };
+            }
+        };
+
+        if let Err(error) = self.spawn_login_process(&home) {
+            return CursorLoginStartResult {
+                started: false,
+                already_logged_in: false,
+                auth_url: None,
+                message: error.to_string(),
+            };
+        }
+
+        for _ in 0..20 {
+            std::thread::sleep(Duration::from_millis(250));
+            let guard = session.lock().expect("cursor login session lock poisoned");
+            if guard.auth_url.is_some() || guard.error.is_some() {
+                return CursorLoginStartResult {
+                    started: true,
+                    already_logged_in: false,
+                    auth_url: guard.auth_url.clone(),
+                    message: guard.message.clone(),
+                };
+            }
+        }
+
+        let guard = session.lock().expect("cursor login session lock poisoned");
+        CursorLoginStartResult {
+            started: true,
+            already_logged_in: false,
+            auth_url: guard.auth_url.clone(),
+            message: guard.message.clone(),
+        }
+    }
+
+    pub fn login_session_status(&self) -> CursorLoginSessionStatus {
+        let session = login_session();
+        let guard = session.lock().expect("cursor login session lock poisoned");
+        CursorLoginSessionStatus {
+            active: guard.active,
+            auth_url: guard.auth_url.clone(),
+            message: guard.message.clone(),
+            error: guard.error.clone(),
         }
     }
 
@@ -533,6 +636,83 @@ impl CursorProvider {
         run_command_with_env(&program, args, home, &self.user_env(home))
     }
 
+    fn spawn_login_process(&self, home: &Path) -> Result<()> {
+        let binary = resolve_cursor_cli_binary(home)?;
+        let program = binary.to_string_lossy().to_string();
+        let home_buf = home.to_path_buf();
+        let envs = self.user_env(home);
+        let session = login_session();
+
+        {
+            let mut guard = session.lock().expect("cursor login session lock poisoned");
+            guard.active = true;
+            guard.auth_url = None;
+            guard.error = None;
+            guard.message = "正在启动 Cursor 登录...".to_string();
+        }
+
+        std::thread::spawn(move || {
+            let mut command = Command::new(&program);
+            command
+                .args(["login"])
+                .current_dir(&home_buf)
+                .envs(&envs)
+                .env("NO_OPEN_BROWSER", "1")
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped());
+
+            let mut child = match command.spawn() {
+                Ok(child) => child,
+                Err(error) => {
+                    set_login_session_error(&session, error.to_string());
+                    return;
+                }
+            };
+
+            if let Some(stdout) = child.stdout.take() {
+                let session_clone = session.clone();
+                std::thread::spawn(move || {
+                    let reader = BufReader::new(stdout);
+                    for line in reader.lines().map_while(Result::ok) {
+                        update_login_session_from_line(&session_clone, &line);
+                    }
+                });
+            }
+
+            if let Some(stderr) = child.stderr.take() {
+                let session_clone = session.clone();
+                std::thread::spawn(move || {
+                    let reader = BufReader::new(stderr);
+                    for line in reader.lines().map_while(Result::ok) {
+                        update_login_session_from_line(&session_clone, &line);
+                    }
+                });
+            }
+
+            let exit_status = child.wait();
+            let mut guard = session.lock().expect("cursor login session lock poisoned");
+            guard.active = false;
+
+            match exit_status {
+                Ok(status) if status.success() => {
+                    guard.message = "登录成功。".to_string();
+                }
+                Ok(_) if guard.error.is_none() => {
+                    guard.error = Some("登录未完成或已取消。".to_string());
+                    if guard.message.is_empty() {
+                        guard.message = "登录流程已结束。".to_string();
+                    }
+                }
+                Err(error) if guard.error.is_none() => {
+                    guard.error = Some(error.to_string());
+                }
+                _ => {}
+            }
+        });
+
+        Ok(())
+    }
+
     fn read_fallback_account_file(&self, home: &Path) -> Option<CursorAccountStatus> {
         let account_file = agent_state_dir(home, CURSOR_AGENT_ID).join("account.json");
         let contents = fs::read_to_string(account_file).ok()?;
@@ -668,12 +848,16 @@ fn collect_files(root: &Path) -> Result<Vec<PathBuf>> {
 
 fn parse_account_status(output: &str) -> CursorAccountStatus {
     let lower = output.to_ascii_lowercase();
-    let logged_in = !lower.contains("not authenticated") && !lower.contains("logged out");
     let email = Regex::new(r"(?i)([A-Z0-9._%+\-]+@[A-Z0-9.\-]+\.[A-Z]{2,})")
         .ok()
         .and_then(|regex| regex.captures(output))
         .and_then(|captures| captures.get(1))
         .map(|value| value.as_str().to_string());
+    let explicitly_logged_out = lower.contains("not logged in")
+        || lower.contains("not authenticated")
+        || lower.contains("logged out");
+    let logged_in = !explicitly_logged_out
+        && (lower.contains("logged in") || email.is_some());
     let display_name = Regex::new(r"(?im)^(?:name|display name|signed in as)\s*:\s*(.+)$")
         .ok()
         .and_then(|regex| regex.captures(output))
@@ -687,4 +871,36 @@ fn parse_account_status(output: &str) -> CursorAccountStatus {
         display_name,
         note: "Cursor CLI 账号信息由 `agent status` 输出做 best-effort 解析。".to_string(),
     }
+}
+
+fn update_login_session_from_line(session: &Arc<Mutex<CursorLoginSessionState>>, line: &str) {
+    let trimmed = line.trim();
+    if trimmed.is_empty() {
+        return;
+    }
+
+    let mut guard = session.lock().expect("cursor login session lock poisoned");
+    if let Some(url) = extract_auth_url(trimmed) {
+        guard.auth_url = Some(url);
+        guard.message = "请在浏览器中打开授权链接完成登录。".to_string();
+        return;
+    }
+
+    if guard.auth_url.is_none() {
+        guard.message = trimmed.to_string();
+    }
+}
+
+fn set_login_session_error(session: &Arc<Mutex<CursorLoginSessionState>>, message: String) {
+    let mut guard = session.lock().expect("cursor login session lock poisoned");
+    guard.active = false;
+    guard.error = Some(message.clone());
+    guard.message = message;
+}
+
+fn extract_auth_url(text: &str) -> Option<String> {
+    Regex::new(r"https://[^\s]+")
+        .ok()?
+        .find(text)
+        .map(|value| value.as_str().to_string())
 }

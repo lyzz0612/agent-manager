@@ -113,6 +113,8 @@ pub fn cursor_cli_install_root(home: &Path) -> PathBuf {
 }
 
 /// Cursor CLI 可执行文件候选名（按优先级）。
+///
+/// 优先返回安装目录内的实际二进制，避免依赖 `PATH` 或 `~/.local/bin` 软链接。
 pub fn cursor_cli_binary_candidates(home: &Path) -> Vec<PathBuf> {
     if cfg!(windows) {
         let root = cursor_cli_install_root(home);
@@ -123,16 +125,25 @@ pub fn cursor_cli_binary_candidates(home: &Path) -> Vec<PathBuf> {
             root.join("cursor-agent.cmd"),
         ]
     } else {
+        let mut candidates = cursor_cli_version_binary_candidates(home);
+        let root = cursor_cli_install_root(home);
+        candidates.push(root.join("cursor-agent"));
+        candidates.push(root.join("agent"));
+
         let bin = home.join(".local").join("bin");
-        vec![bin.join("agent"), bin.join("cursor-agent")]
+        candidates.push(bin.join("agent"));
+        candidates.push(bin.join("cursor-agent"));
+        candidates
     }
 }
 
-/// 解析已安装的 Cursor CLI 可执行文件。
+/// 解析已安装的 Cursor CLI 可执行文件，返回 canonical 绝对路径。
 pub fn resolve_cursor_cli_binary(home: &Path) -> Result<PathBuf> {
     for candidate in cursor_cli_binary_candidates(home) {
         if candidate.exists() {
-            return Ok(candidate);
+            return Ok(candidate
+                .canonicalize()
+                .unwrap_or(candidate));
         }
     }
 
@@ -142,9 +153,36 @@ pub fn resolve_cursor_cli_binary(home: &Path) -> Result<PathBuf> {
         ))
     } else {
         Err(anyhow!(
-            "未找到 Cursor CLI（~/.local/bin/agent 或 ~/.local/share/cursor-agent）"
+            "未找到 Cursor CLI（~/.local/share/cursor-agent/versions/*/cursor-agent 或 ~/.local/bin/agent）"
         ))
     }
+}
+
+fn cursor_cli_version_binary_candidates(home: &Path) -> Vec<PathBuf> {
+    let versions_dir = cursor_cli_install_root(home).join("versions");
+    let Ok(entries) = fs::read_dir(&versions_dir) else {
+        return Vec::new();
+    };
+
+    let mut version_dirs = entries
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .filter(|path| path.is_dir())
+        .collect::<Vec<_>>();
+    version_dirs.sort();
+    version_dirs.reverse();
+
+    let mut candidates = Vec::new();
+    for version_dir in version_dirs {
+        for name in ["cursor-agent", "agent"] {
+            let path = version_dir.join(name);
+            if path.is_file() {
+                candidates.push(path);
+            }
+        }
+    }
+
+    candidates
 }
 
 pub fn agent_config_path(home: &Path, agent_id: &str) -> PathBuf {

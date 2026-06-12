@@ -4,9 +4,9 @@ use anyhow::{bail, Context, Result};
 use cursor_provider::CursorProvider;
 use host_model::{
     ActionMessage, AgentSummary, AppSettings, AppStatus, AppUpdateResult, AppUpdateStatus,
-    CursorAccountStatus, CursorAuthFlowStatus, CursorRuntimeStatus, KnownConfig, PluginDetail,
-    PluginSummary, RawConfigDocument, RawConfigPreview, RuntimeActionResult, SkillDocument,
-    SkillFileSummary, SkillSummary,
+    CursorAccountStatus, CursorAuthFlowStatus, CursorLoginSessionStatus, CursorLoginStartResult,
+    CursorRuntimeStatus, KnownConfig, PluginDetail, PluginSummary, RawConfigDocument,
+    RawConfigPreview, RuntimeActionResult, SkillDocument, SkillFileSummary, SkillSummary,
 };
 use paseo_provider::PaseoProvider;
 use std::collections::HashSet;
@@ -223,6 +223,14 @@ impl AppState {
 
     pub fn cursor_auth_flow_status(&self) -> CursorAuthFlowStatus {
         self.provider().auth_flow_status()
+    }
+
+    pub fn start_cursor_login(&self) -> CursorLoginStartResult {
+        self.provider().start_login()
+    }
+
+    pub fn cursor_login_session_status(&self) -> CursorLoginSessionStatus {
+        self.provider().login_session_status()
     }
 
     pub fn known_config(&self) -> Result<KnownConfig> {

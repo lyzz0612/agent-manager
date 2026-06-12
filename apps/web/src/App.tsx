@@ -35,6 +35,20 @@ type CursorAuthFlowStatus = {
   steps: AuthStep[];
 };
 
+type CursorLoginStartResult = {
+  started: boolean;
+  already_logged_in: boolean;
+  auth_url: string | null;
+  message: string;
+};
+
+type CursorLoginSessionStatus = {
+  active: boolean;
+  auth_url: string | null;
+  message: string;
+  error: string | null;
+};
+
 type KnownConfig = {
   disable_telemetry: boolean;
   auto_update: boolean;
@@ -232,6 +246,9 @@ export default function App() {
   const [pluginDetail, setPluginDetail] = useState<PluginDetail | null>(null);
   const [accountStatus, setAccountStatus] = useState<CursorAccountStatus | null>(null);
   const [authFlow, setAuthFlow] = useState<CursorAuthFlowStatus | null>(null);
+  const [cursorLoginSession, setCursorLoginSession] = useState<CursorLoginSessionStatus | null>(
+    null,
+  );
   const [knownConfig, setKnownConfig] = useState<KnownConfig>(defaultKnownConfig);
   const [rawConfig, setRawConfig] = useState<RawConfigDocument | null>(null);
   const [rawDraft, setRawDraft] = useState("");
@@ -354,12 +371,13 @@ export default function App() {
   }
 
   async function loadDashboard() {
-    const [nextAgents, nextPlugins, account, flow, nextKnownConfig, nextRawConfig, nextSkills] =
+    const [nextAgents, nextPlugins, account, flow, loginSession, nextKnownConfig, nextRawConfig, nextSkills] =
       await Promise.all([
         requestJson<AgentSummary[]>("/api/agents"),
         requestJson<PluginSummary[]>("/api/plugins"),
         requestJson<CursorAccountStatus>("/api/cursor/account"),
         requestJson<CursorAuthFlowStatus>("/api/cursor/auth-flow"),
+        requestJson<CursorLoginSessionStatus>("/api/cursor/login/status"),
         requestJson<KnownConfig>("/api/profile/known-config"),
         requestJson<RawConfigDocument>("/api/profile/raw-config"),
         requestJson<SkillSummary[]>("/api/profile/skills"),
@@ -369,6 +387,7 @@ export default function App() {
     setPlugins(nextPlugins);
     setAccountStatus(account);
     setAuthFlow(flow);
+    setCursorLoginSession(loginSession);
     setKnownConfig(nextKnownConfig);
     setRawConfig(nextRawConfig);
     setRawDraft(nextRawConfig.content);
@@ -522,6 +541,38 @@ export default function App() {
       notify("error", getErrorMessage(error));
       setPullingUpdate(false);
     }
+  }
+
+  async function refreshCursorAccountStatus() {
+    const account = await requestJson<CursorAccountStatus>("/api/cursor/account");
+    setAccountStatus(account);
+    return account;
+  }
+
+  async function refreshCursorLoginSession() {
+    const session = await requestJson<CursorLoginSessionStatus>("/api/cursor/login/status");
+    setCursorLoginSession(session);
+    return session;
+  }
+
+  async function startCursorLogin() {
+    const result = await requestJson<CursorLoginStartResult>("/api/cursor/login/start", {
+      method: "POST",
+    });
+
+    if (result.already_logged_in) {
+      await refreshCursorAccountStatus();
+      notify("success", result.message);
+      return;
+    }
+
+    if (!result.started) {
+      notify("error", result.message);
+      return;
+    }
+
+    await refreshCursorLoginSession();
+    notify("info", result.message);
   }
 
   async function handleLogin(event: FormEvent<HTMLFormElement>) {
@@ -926,12 +977,16 @@ export default function App() {
               agent={selectedAgent}
               accountStatus={accountStatus}
               authFlow={authFlow}
+              cursorLoginSession={cursorLoginSession}
               knownConfig={knownConfig}
               rawConfig={rawConfig}
               rawDraft={rawDraft}
               rawPreview={rawPreview}
               onBack={backToAgentList}
               onAction={handleAgentAction}
+              onStartCursorLogin={() => startCursorLogin()}
+              onRefreshCursorAccount={() => refreshCursorAccountStatus()}
+              onRefreshCursorLoginSession={() => refreshCursorLoginSession()}
               onKnownConfigChange={setKnownConfig}
               onRawDraftChange={setRawDraft}
               onSaveKnownConfig={() => void saveKnownConfig()}
@@ -1325,6 +1380,7 @@ function AgentDetailView(props: {
   agent: AgentSummary;
   accountStatus: CursorAccountStatus | null;
   authFlow: CursorAuthFlowStatus | null;
+  cursorLoginSession: CursorLoginSessionStatus | null;
   knownConfig: KnownConfig;
   rawConfig: RawConfigDocument | null;
   rawDraft: string;
@@ -1335,6 +1391,9 @@ function AgentDetailView(props: {
     action: "install" | "upgrade" | "uninstall",
     agentName?: string,
   ) => Promise<void>;
+  onStartCursorLogin: () => Promise<void>;
+  onRefreshCursorAccount: () => Promise<CursorAccountStatus>;
+  onRefreshCursorLoginSession: () => Promise<CursorLoginSessionStatus>;
   onKnownConfigChange: Dispatch<SetStateAction<KnownConfig>>;
   onRawDraftChange: (value: string) => void;
   onSaveKnownConfig: () => void;
@@ -1346,12 +1405,16 @@ function AgentDetailView(props: {
     agent,
     accountStatus,
     authFlow,
+    cursorLoginSession,
     knownConfig,
     rawConfig,
     rawDraft,
     rawPreview,
     onBack,
     onAction,
+    onStartCursorLogin,
+    onRefreshCursorAccount,
+    onRefreshCursorLoginSession,
     onKnownConfigChange,
     onRawDraftChange,
     onSaveKnownConfig,
@@ -1367,6 +1430,7 @@ function AgentDetailView(props: {
   );
 
   const [activeTab, setActiveTab] = useState<AgentDetailTabId>("overview");
+  const [startingLogin, setStartingLogin] = useState(false);
 
   useEffect(() => {
     setActiveTab("overview");
@@ -1377,6 +1441,60 @@ function AgentDetailView(props: {
       setActiveTab("overview");
     }
   }, [activeTab, detailTabs]);
+
+  useEffect(() => {
+    if (agent.id !== "cursor" || activeTab !== "account") {
+      return;
+    }
+
+    if (accountStatus?.logged_in) {
+      return;
+    }
+
+    const shouldPoll =
+      cursorLoginSession?.active ||
+      cursorLoginSession?.auth_url ||
+      startingLogin;
+
+    if (!shouldPoll) {
+      return;
+    }
+
+    const poll = async () => {
+      try {
+        const [account, session] = await Promise.all([
+          onRefreshCursorAccount(),
+          onRefreshCursorLoginSession(),
+        ]);
+
+        if (account.logged_in) {
+          setStartingLogin(false);
+        } else if (!session.active && !session.auth_url) {
+          setStartingLogin(false);
+        }
+      } catch {
+        // 登录流程进行中，忽略短暂请求失败。
+      }
+    };
+
+    void poll();
+    const interval = window.setInterval(() => {
+      void poll();
+    }, 3000);
+
+    return () => {
+      window.clearInterval(interval);
+    };
+  }, [
+    accountStatus?.logged_in,
+    activeTab,
+    agent.id,
+    cursorLoginSession?.active,
+    cursorLoginSession?.auth_url,
+    onRefreshCursorAccount,
+    onRefreshCursorLoginSession,
+    startingLogin,
+  ]);
 
   return (
     <div className="agent-detail">
@@ -1441,9 +1559,58 @@ function AgentDetailView(props: {
               <InfoRow label="邮箱" value={accountStatus?.email ?? "暂不可得"} />
               <InfoRow label="显示名" value={accountStatus?.display_name ?? "暂不可得"} />
               <p className="muted">{accountStatus?.note}</p>
+              {!accountStatus?.logged_in ? (
+                <div className="actions">
+                  <button
+                    disabled={startingLogin || cursorLoginSession?.active}
+                    onClick={() => {
+                      setStartingLogin(true);
+                      void onStartCursorLogin().finally(() => {
+                        setStartingLogin(false);
+                      });
+                    }}
+                    type="button"
+                  >
+                    {startingLogin || cursorLoginSession?.active ? "正在启动登录..." : "开始登录"}
+                  </button>
+                </div>
+              ) : null}
             </Panel>
             <Panel title="网页登录引导">
               <p className="muted">{authFlow?.summary}</p>
+              {cursorLoginSession?.message ? (
+                <p className="muted">{cursorLoginSession.message}</p>
+              ) : null}
+              {cursorLoginSession?.error ? (
+                <p className="status-banner error">{cursorLoginSession.error}</p>
+              ) : null}
+              {cursorLoginSession?.auth_url ? (
+                <div className="stack">
+                  <p className="muted">授权链接（可在新标签页打开）：</p>
+                  <a
+                    className="external-link"
+                    href={cursorLoginSession.auth_url}
+                    rel="noreferrer"
+                    target="_blank"
+                  >
+                    {cursorLoginSession.auth_url}
+                  </a>
+                  <div className="actions">
+                    <a
+                      className="secondary"
+                      href={cursorLoginSession.auth_url}
+                      rel="noreferrer"
+                      target="_blank"
+                    >
+                      在新标签页打开
+                    </a>
+                  </div>
+                </div>
+              ) : null}
+              {!accountStatus?.logged_in &&
+              (cursorLoginSession?.active || cursorLoginSession?.auth_url || startingLogin) ? (
+                <p className="muted">正在监听授权状态，完成浏览器登录后会自动更新。</p>
+              ) : null}
               <ol className="steps">
                 {authFlow?.steps.map((step) => (
                   <li key={step.title}>

@@ -51,6 +51,22 @@ pub struct CursorAuthFlowStatus {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CursorLoginStartResult {
+    pub started: bool,
+    pub already_logged_in: bool,
+    pub auth_url: Option<String>,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct CursorLoginSessionStatus {
+    pub active: bool,
+    pub auth_url: Option<String>,
+    pub message: String,
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct KnownConfig {
     pub disable_telemetry: bool,
     pub auto_update: bool,

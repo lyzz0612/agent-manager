@@ -9,7 +9,8 @@ use axum::{
 use host_model::{
     ActionMessage, AgentSummary, AppSettings, AppStatus, AppUpdateResult, AppUpdateStatus,
     AuthLoginRequest,
-    AuthLoginResponse, CursorAccountStatus, CursorAuthFlowStatus, CursorRuntimeStatus,
+    AuthLoginResponse, CursorAccountStatus, CursorAuthFlowStatus, CursorLoginSessionStatus,
+    CursorLoginStartResult, CursorRuntimeStatus,
     KnownConfig, PluginDetail, PluginSummary, RawConfigDocument, RawConfigPreview, RawConfigUpdateRequest,
     RuntimeActionResult, SessionStatus, SkillDocument, SkillFileSummary, SkillSummary,
     SkillUpdateRequest,
@@ -92,6 +93,8 @@ async fn main() -> anyhow::Result<()> {
         .route("/cursor/runtime/upgrade", post(upgrade_runtime))
         .route("/cursor/account", get(account_status))
         .route("/cursor/auth-flow", get(auth_flow_status))
+        .route("/cursor/login/start", post(start_cursor_login))
+        .route("/cursor/login/status", get(cursor_login_status))
         .route(
             "/profile/known-config",
             get(get_known_config).put(update_known_config),
@@ -349,6 +352,22 @@ async fn auth_flow_status(
 ) -> Result<Json<CursorAuthFlowStatus>, ApiError> {
     ensure_authenticated(&state, &headers)?;
     Ok(Json(state.cursor_auth_flow_status()))
+}
+
+async fn start_cursor_login(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Result<Json<CursorLoginStartResult>, ApiError> {
+    ensure_authenticated(&state, &headers)?;
+    Ok(Json(state.start_cursor_login()))
+}
+
+async fn cursor_login_status(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Result<Json<CursorLoginSessionStatus>, ApiError> {
+    ensure_authenticated(&state, &headers)?;
+    Ok(Json(state.cursor_login_session_status()))
 }
 
 async fn get_known_config(
