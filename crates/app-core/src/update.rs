@@ -383,15 +383,15 @@ fn detect_build_profile() -> BuildProfile {
 
 fn cargo_build_label(profile: BuildProfile) -> &'static str {
     match profile {
-        BuildProfile::Release => "cargo build --release -p agent-manager-server",
-        BuildProfile::Debug => "cargo build -p agent-manager-server",
+        BuildProfile::Release => "cargo build --release --locked -p agent-manager-server",
+        BuildProfile::Debug => "cargo build --locked -p agent-manager-server",
     }
 }
 
 fn cargo_build_args(profile: BuildProfile) -> Vec<&'static str> {
     match profile {
-        BuildProfile::Release => vec!["build", "--release", "-p", "agent-manager-server"],
-        BuildProfile::Debug => vec!["build", "-p", "agent-manager-server"],
+        BuildProfile::Release => vec!["build", "--release", "--locked", "-p", "agent-manager-server"],
+        BuildProfile::Debug => vec!["build", "--locked", "-p", "agent-manager-server"],
     }
 }
 

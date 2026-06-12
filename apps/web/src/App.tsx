@@ -1344,7 +1344,8 @@ export default function App() {
                     </button>
                   </div>
                   <p className="muted">
-                    将在独立后台进程执行 git pull、npm run build:web 和 cargo build --release。构建失败会自动回滚；构建成功后会自动重启服务，无需手动操作。
+                    拉取前会丢弃本地改动（含 Cargo.lock 等），然后在独立后台进程执行 git pull、npm
+                    run build:web 和 cargo build --release --locked。构建失败会自动回滚；构建成功后会自动重启服务，无需手动操作。
                   </p>
                   {updateOutput ? (
                     <div className="update-log">
