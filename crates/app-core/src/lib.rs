@@ -14,7 +14,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
 use uuid::Uuid;
 
-pub const DEFAULT_DEV_TOKEN: &str = "dev-agent-manager-token";
+pub const DEFAULT_DEV_TOKEN: &str = "123456";
 pub const DEFAULT_PORT: u16 = 3000;
 
 #[derive(Debug, Clone, PartialEq, Eq)]

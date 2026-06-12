@@ -623,10 +623,6 @@ export default function App() {
         <section className="panel hero">
           <p className="eyebrow">Cursor VPS Manager</p>
           <h1>使用固定访问 Token 进入管理页</h1>
-          <p className="muted">
-            生产环境需要显式设置 <code>ADMIN_TOKEN</code>，开发态默认使用
-            <code> dev-agent-manager-token</code>。
-          </p>
         </section>
 
         <section className="panel">
@@ -707,11 +703,6 @@ export default function App() {
                     }
                   />
                 ))}
-            </Panel>
-            <Panel title="Cursor CLI 账号摘要">
-              <InfoRow label="登录状态" value={accountStatus?.logged_in ? "已登录" : "未登录"} />
-              <InfoRow label="邮箱" value={accountStatus?.email ?? "暂不可得"} />
-              <InfoRow label="显示名" value={accountStatus?.display_name ?? "暂不可得"} />
             </Panel>
           </>
         ) : null}

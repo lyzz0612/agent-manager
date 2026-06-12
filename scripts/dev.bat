@@ -2,7 +2,7 @@
 setlocal
 
 if "%APP_ENV%"=="" set APP_ENV=development
-if "%ADMIN_TOKEN%"=="" set ADMIN_TOKEN=dev-agent-manager-token
+if "%ADMIN_TOKEN%"=="" set ADMIN_TOKEN=123456
 if "%PORT%"=="" set PORT=3000
 
 echo [agent-manager] APP_ENV=%APP_ENV%
