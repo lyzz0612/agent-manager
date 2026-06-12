@@ -628,6 +628,9 @@ export default function App() {
       if (action === "install" && result.installed) {
         setSelectedAgentId(agentId);
       }
+      if (agentId === "cursor") {
+        await refreshCursorAccountStatus();
+      }
       notify("success", result.message);
     } catch (error) {
       notify("error", getErrorMessage(error));
@@ -1446,6 +1449,14 @@ function AgentDetailView(props: {
       setActiveTab("overview");
     }
   }, [activeTab, detailTabs]);
+
+  useEffect(() => {
+    if (agent.id !== "cursor" || activeTab !== "account") {
+      return;
+    }
+
+    void onRefreshCursorAccount();
+  }, [activeTab, agent.id, onRefreshCursorAccount]);
 
   useEffect(() => {
     if (agent.id !== "cursor" || activeTab !== "account") {
