@@ -129,6 +129,8 @@ pub fn spawn_background_update(config: &AppConfig) -> Result<AppUpdateResult> {
     let parent_pid = std::process::id();
     let exe = std::env::current_exe().context("failed to resolve current executable")?;
 
+    let git_commit = git.commit.clone();
+
     write_job_state(
         config,
         &UpdateJobState {
@@ -136,7 +138,7 @@ pub fn spawn_background_update(config: &AppConfig) -> Result<AppUpdateResult> {
             message: "更新任务已在后台启动。".to_string(),
             output: String::new(),
             version: config.version.clone(),
-            git_commit: Some(git.commit),
+            git_commit: Some(git_commit.clone()),
         },
     )?;
 
@@ -148,7 +150,7 @@ pub fn spawn_background_update(config: &AppConfig) -> Result<AppUpdateResult> {
         message: "更新已在后台启动，完成后将自动重启服务。".to_string(),
         output: String::new(),
         version: config.version.clone(),
-        git_commit: Some(git.commit),
+        git_commit: Some(git_commit),
         restart_required: false,
     })
 }
