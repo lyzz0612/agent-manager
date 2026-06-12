@@ -124,8 +124,6 @@ pub fn spawn_background_update(config: &AppConfig) -> Result<AppUpdateResult> {
         });
     }
 
-    ensure_clean_working_tree(&config.repo_root)?;
-
     let parent_pid = std::process::id();
     let exe = std::env::current_exe().context("failed to resolve current executable")?;
 
@@ -247,14 +245,25 @@ fn pull_and_build_inner(config: &AppConfig, profile: BuildProfile) -> Result<Inn
         .clone()
         .ok_or_else(|| anyhow!("无法确定远程跟踪分支"))?;
 
-    ensure_clean_working_tree(&config.repo_root)?;
-
     let baseline_commit = git.commit_full.clone();
     write_update_baseline(config, &baseline_commit)?;
 
     let mut output = String::new();
     let mut success = true;
     let mut pulled = false;
+
+    append_step(
+        &mut output,
+        &mut success,
+        "git reset --hard HEAD",
+        run_git_capture(&config.repo_root, &["reset", "--hard", "HEAD"]),
+    )?;
+    append_step(
+        &mut output,
+        &mut success,
+        "git clean -fd",
+        run_git_capture(&config.repo_root, &["clean", "-fd"]),
+    )?;
 
     append_step(
         &mut output,
@@ -497,21 +506,6 @@ fn build_update_message(success: bool, rolled_back: bool, upstream: &str) -> Str
     }
 
     "更新失败，请查看下方命令输出。".to_string()
-}
-
-fn ensure_clean_working_tree(repo_root: &Path) -> Result<()> {
-    let status = run_git_capture(repo_root, &["status", "--porcelain"])?;
-    if !status.success {
-        return Err(anyhow!("无法检查 Git 工作区状态：{}", status.output));
-    }
-
-    if !status.output.trim().is_empty() {
-        return Err(anyhow!(
-            "工作区存在未提交改动，已中止更新。请先提交、还原或清理本地改动后再试。"
-        ));
-    }
-
-    Ok(())
 }
 
 fn update_baseline_path(config: &AppConfig) -> PathBuf {
