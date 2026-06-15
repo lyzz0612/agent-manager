@@ -11,9 +11,9 @@ use host_model::{
     AuthLoginRequest,
     AuthLoginResponse, CursorAccountStatus, CursorAuthFlowStatus, CursorLoginSessionStatus,
     CursorLoginStartResult, CursorRuntimeStatus,
-    KnownConfig, PluginDetail, PluginSummary, RawConfigDocument, RawConfigPreview, RawConfigUpdateRequest,
-    RuntimeActionResult, SessionStatus, SkillDocument, SkillFileSummary, SkillSummary,
-    SkillUpdateRequest,
+    KnownConfig, OverviewData, PluginDetail, PluginSummary, RawConfigDocument, RawConfigPreview,
+    RawConfigUpdateRequest, RuntimeActionResult, SessionStatus, SkillDocument, SkillFileSummary,
+    SkillSummary, SkillUpdateRequest,
 };
 use serde_json::json;
 use std::sync::Arc;
@@ -71,6 +71,7 @@ async fn main() -> anyhow::Result<()> {
     let api = Router::new()
         .route("/health", get(health))
         .route("/app/status", get(app_status))
+        .route("/overview", get(overview))
         .route("/app/settings", get(app_settings))
         .route("/app/update/check", post(check_app_update))
         .route("/app/update/status", get(update_job_status))
@@ -95,6 +96,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/cursor/auth-flow", get(auth_flow_status))
         .route("/cursor/login/start", post(start_cursor_login))
         .route("/cursor/login/status", get(cursor_login_status))
+        .route("/cursor/logout", post(logout_cursor))
         .route(
             "/profile/known-config",
             get(get_known_config).put(update_known_config),
@@ -155,6 +157,14 @@ async fn health() -> Json<ActionMessage> {
 
 async fn app_status(State(state): State<Arc<AppState>>) -> Json<AppStatus> {
     Json(state.status())
+}
+
+async fn overview(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Result<Json<OverviewData>, ApiError> {
+    ensure_authenticated(&state, &headers)?;
+    Ok(Json(state.overview()))
 }
 
 async fn app_settings(
@@ -368,6 +378,14 @@ async fn cursor_login_status(
 ) -> Result<Json<CursorLoginSessionStatus>, ApiError> {
     ensure_authenticated(&state, &headers)?;
     Ok(Json(state.cursor_login_session_status()))
+}
+
+async fn logout_cursor(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Result<Json<ActionMessage>, ApiError> {
+    ensure_authenticated(&state, &headers)?;
+    Ok(Json(state.logout_cursor()?))
 }
 
 async fn get_known_config(

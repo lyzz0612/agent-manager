@@ -5,8 +5,9 @@ use cursor_provider::CursorProvider;
 use host_model::{
     ActionMessage, AgentSummary, AppSettings, AppStatus, AppUpdateResult, AppUpdateStatus,
     CursorAccountStatus, CursorAuthFlowStatus, CursorLoginSessionStatus, CursorLoginStartResult,
-    CursorRuntimeStatus, KnownConfig, PluginDetail, PluginSummary, RawConfigDocument,
-    RawConfigPreview, RuntimeActionResult, SkillDocument, SkillFileSummary, SkillSummary,
+    CursorRuntimeStatus, KnownConfig, OverviewAgentItem, OverviewData, OverviewPluginItem,
+    PluginDetail, PluginSummary, RawConfigDocument, RawConfigPreview, RuntimeActionResult,
+    SkillDocument, SkillFileSummary, SkillSummary,
 };
 use paseo_provider::PaseoProvider;
 use std::collections::HashSet;
@@ -143,6 +144,35 @@ impl AppState {
         self.config.status()
     }
 
+    pub fn overview(&self) -> OverviewData {
+        let status = self.status();
+
+        OverviewData {
+            app_name: status.app_name,
+            version: status.version,
+            mode: status.mode,
+            agents: self
+                .list_agents()
+                .into_iter()
+                .map(|agent| OverviewAgentItem {
+                    id: agent.id,
+                    name: agent.name,
+                    installed: agent.installed,
+                    version: agent.version,
+                })
+                .collect(),
+            plugins: self
+                .list_plugins()
+                .into_iter()
+                .map(|plugin| OverviewPluginItem {
+                    id: plugin.id,
+                    name: plugin.name,
+                    installed: plugin.installed,
+                })
+                .collect(),
+        }
+    }
+
     pub fn app_settings(&self) -> AppSettings {
         update::app_settings(&self.config)
     }
@@ -231,6 +261,10 @@ impl AppState {
 
     pub fn cursor_login_session_status(&self) -> CursorLoginSessionStatus {
         self.provider().login_session_status()
+    }
+
+    pub fn logout_cursor(&self) -> Result<ActionMessage> {
+        self.provider().logout()
     }
 
     pub fn known_config(&self) -> Result<KnownConfig> {

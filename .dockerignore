@@ -5,5 +5,4 @@ target
 .git
 .cursor
 README.md
-docs
-openspec
+.codestable

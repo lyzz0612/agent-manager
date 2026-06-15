@@ -32,25 +32,22 @@ impl PaseoProvider {
 
         match plugin_id {
             PASEO_PLUGIN_ID => {
-                let (daemon_status, providers_listing, agents_listing, daemon_pair_json) =
-                    if status.installed {
-                        self.read_paseo_detail_outputs()?
-                    } else {
-                        (
-                            "Paseo CLI 未安装，无法执行 paseo daemon status".to_string(),
-                            "Paseo CLI 未安装，无法执行 paseo provider ls".to_string(),
-                            "Paseo CLI 未安装，无法执行 paseo ls".to_string(),
-                            "Paseo CLI 未安装，无法执行 paseo daemon pair --json".to_string(),
-                        )
-                    };
+                let (daemon_status, daemon_pair_json) = if status.installed {
+                    self.read_paseo_detail_outputs()?
+                } else {
+                    (
+                        "Paseo CLI 未安装，无法执行 paseo daemon status".to_string(),
+                        "Paseo CLI 未安装，无法执行 paseo daemon pair --json".to_string(),
+                    )
+                };
 
                 Ok(PluginDetail {
                     id: definition.id.to_string(),
                     name: definition.name.to_string(),
                     installed: status.installed,
                     daemon_status,
-                    providers_listing,
-                    agents_listing,
+                    providers_listing: String::new(),
+                    agents_listing: String::new(),
                     daemon_pair_json,
                 })
             }
@@ -220,7 +217,7 @@ impl PaseoProvider {
         }
     }
 
-    fn read_paseo_detail_outputs(&self) -> Result<(String, String, String, String)> {
+    fn read_paseo_detail_outputs(&self) -> Result<(String, String)> {
         let home = user_home_dir()?;
         let env = self.user_env(&home);
         let binary = resolve_paseo_cli_binary(&home, &env)?;
@@ -232,15 +229,6 @@ impl PaseoProvider {
             &env,
             Some(Duration::from_secs(8)),
         );
-        let providers_listing = capture_paseo_cli_output(
-            &binary,
-            &["provider", "ls"],
-            &home,
-            &env,
-            Some(Duration::from_secs(8)),
-        );
-        let agents_listing =
-            capture_paseo_cli_output(&binary, &["ls"], &home, &env, Some(Duration::from_secs(8)));
         let daemon_pair_json = sanitize_daemon_pair_json(capture_paseo_cli_output(
             &binary,
             &["daemon", "pair", "--json"],
@@ -249,12 +237,7 @@ impl PaseoProvider {
             Some(Duration::from_secs(8)),
         ));
 
-        Ok((
-            daemon_status,
-            providers_listing,
-            agents_listing,
-            daemon_pair_json,
-        ))
+        Ok((daemon_status, daemon_pair_json))
     }
 
     fn install_paseo(&self) -> Result<RuntimeActionResult> {

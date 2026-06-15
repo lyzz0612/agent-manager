@@ -2,6 +2,8 @@ services:
   agent-manager:
     image: ${IMAGE_NAME:-ghcr.io/lyzz0612/agent-manager}:${IMAGE_TAG:-latest}
     restart: unless-stopped
+    labels:
+      - autoheal=true
     ports:
       - "${PORT:-3000}:3000"
     environment:
@@ -10,3 +12,17 @@ services:
       PORT: "3000"
       MANAGED_BASE_DIR: /app/state
       WEB_DIST_DIR: /app/apps/web/dist
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://127.0.0.1:3000/api/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+
+  autoheal:
+    image: willfarrell/autoheal:latest
+    restart: always
+    environment:
+      AUTOHEAL_CONTAINER_LABEL: autoheal
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock

@@ -7,9 +7,10 @@ use host_fs::{
     COMMON_SKILL_AGENT, SUPPORTED_AGENTS,
 };
 use host_model::{
-    AgentSummary, AuthStep, CursorAccountStatus, CursorAuthFlowStatus, CursorLoginSessionStatus,
-    CursorLoginStartResult, CursorRuntimeStatus, KnownConfig, RawConfigDocument, RawConfigPreview,
-    RuntimeActionResult, SkillDocument, SkillFileSummary, SkillSummary,
+    ActionMessage, AgentSummary, AuthStep, CursorAccountStatus, CursorAuthFlowStatus,
+    CursorLoginSessionStatus, CursorLoginStartResult, CursorRuntimeStatus, KnownConfig,
+    RawConfigDocument, RawConfigPreview, RuntimeActionResult, SkillDocument, SkillFileSummary,
+    SkillSummary,
 };
 use host_proc::run_command_with_env;
 use regex::Regex;
@@ -306,6 +307,25 @@ impl CursorProvider {
             message: guard.message.clone(),
             error: guard.error.clone(),
         }
+    }
+
+    pub fn logout(&self) -> Result<ActionMessage> {
+        if !self.agent_runtime_status(CURSOR_AGENT_ID).installed {
+            return Err(anyhow!("尚未安装 Cursor CLI，无法注销。"));
+        }
+
+        let home = user_home_dir()?;
+        self.run_agent_command(CURSOR_AGENT_ID, &["logout"], &home)?;
+
+        let session = login_session();
+        {
+            let mut guard = session.lock().expect("cursor login session lock poisoned");
+            *guard = CursorLoginSessionState::default();
+        }
+
+        Ok(ActionMessage {
+            message: "已注销 Cursor 账号。".to_string(),
+        })
     }
 
     pub fn known_config(&self) -> Result<KnownConfig> {
@@ -696,6 +716,7 @@ impl CursorProvider {
             match exit_status {
                 Ok(status) if status.success() => {
                     guard.message = "登录成功。".to_string();
+                    guard.auth_url = None;
                 }
                 Ok(_) if guard.error.is_none() => {
                     guard.error = Some("登录未完成或已取消。".to_string());

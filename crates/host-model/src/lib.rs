@@ -23,6 +23,30 @@ pub struct AppStatus {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OverviewAgentItem {
+    pub id: String,
+    pub name: String,
+    pub installed: bool,
+    pub version: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OverviewPluginItem {
+    pub id: String,
+    pub name: String,
+    pub installed: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OverviewData {
+    pub app_name: String,
+    pub version: String,
+    pub mode: String,
+    pub agents: Vec<OverviewAgentItem>,
+    pub plugins: Vec<OverviewPluginItem>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CursorRuntimeStatus {
     pub installed: bool,
     pub version: Option<String>,

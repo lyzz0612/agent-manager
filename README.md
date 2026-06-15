@@ -30,14 +30,15 @@
 - 未来桌面端预留 `Tauri` 边界
 - `apps/ + crates/` monorepo
 
-## 当前文档
+## 文档
 
-- `docs/index.md`: 文档索引
-- `docs/project-overview.md`: 项目说明
-- `docs/technical-solution.md`: 技术方案
-- `docs/decisions.md`: 用户已拍板项
-- `docs/run-and-deploy.md`: 本机运行与部署说明
-- `openspec/changes/add-cursor-vps-manager/`: 当前 Phase 1 变更
+项目文档位于 CodeStable 体系（`.codestable/`）：
+
+- `.codestable/requirements/agent-manager.md` — 项目说明与 Phase 1 范围
+- `.codestable/architecture/ARCHITECTURE.md` — 技术方案与架构
+- `.codestable/compound/decision/phase1-user-decisions.md` — 已拍板约束
+- `.codestable/attention.md` — 运行、部署与环境变量
+- `.codestable/reference/system-overview.md` — CodeStable 体系说明
 
 ## 快速入口
 
@@ -57,11 +58,4 @@
 
 ## 当前状态
 
-当前变更已完成：
-
-- `proposal`
-- `design`
-- `specs`
-- `tasks`
-
-后续实现可以从 `openspec/changes/add-cursor-vps-manager/tasks.md` 开始。
+Phase 1 基础实现骨架、交付链路与 CodeStable 文档体系已就位，核心集成细节仍在推进中。
