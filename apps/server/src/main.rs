@@ -2,23 +2,29 @@ use app_core::{parse_update_worker_parent_pid, AppConfig, AppState};
 use axum::{
     extract::{Path, State},
     http::{header::SET_COOKIE, HeaderMap, StatusCode},
-    response::{IntoResponse, Response},
+    response::{
+        sse::{Event, KeepAlive, Sse},
+        IntoResponse, Response,
+    },
     routing::{get, post},
     Json, Router,
 };
+use futures_util::stream::StreamExt;
 use host_model::{
     ActionMessage, AgentSummary, AppSettings, AppStatus, AppUpdateResult, AppUpdateStatus,
     AuthLoginRequest,
-    AuthLoginResponse, CacheRefreshRequest, CursorAccountStatus, CursorAuthFlowStatus,
+    AuthLoginResponse, CacheRefreshRequest, CommandJobBusyResponse, CommandJobCurrentResponse,
+    CommandJobSnapshot, CommandJobStartResponse, CursorAccountStatus, CursorAuthFlowStatus,
     CursorLoginSessionStatus,
     CursorLoginStartResult, CursorRuntimeStatus,
     GhAccountStatus, GhAuthFlowStatus, GhLoginSessionStatus, GhLoginStartResult,
     KnownConfig, OverviewData, PluginDetail, PluginSummary, RawConfigDocument, RawConfigPreview,
     RawConfigUpdateRequest, RuntimeActionResult, SessionStatus, SkillDocument, SkillFileSummary,
     SkillSummary, SkillUpdateRequest, SkillsCliCapability, SkillsCliInstallRequest,
-    SkillsCliInstallResult, SkillsCliPreviewResult, SkillsCliSourceRequest,
+    SkillsCliPreviewResult, SkillsCliSourceRequest,
 };
-use serde_json::json;
+use serde_json::{json, Value};
+use std::convert::Infallible;
 use std::sync::Arc;
 use tower_http::{
     services::{ServeDir, ServeFile},
@@ -30,15 +36,19 @@ const SESSION_COOKIE_NAME: &str = "agent_manager_session";
 
 struct ApiError {
     status: StatusCode,
-    message: String,
+    body: Value,
 }
 
 impl ApiError {
     fn new(status: StatusCode, message: impl Into<String>) -> Self {
         Self {
             status,
-            message: message.into(),
+            body: json!({ "error": message.into() }),
         }
+    }
+
+    fn json(status: StatusCode, body: Value) -> Self {
+        Self { status, body }
     }
 }
 
@@ -50,8 +60,14 @@ impl From<anyhow::Error> for ApiError {
 
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
-        (self.status, Json(json!({ "error": self.message }))).into_response()
+        (self.status, Json(self.body)).into_response()
     }
+}
+
+fn map_job_busy(error: CommandJobBusyResponse) -> ApiError {
+    ApiError::json(StatusCode::CONFLICT, serde_json::to_value(error).unwrap_or_else(|_| {
+        json!({ "error": "另一个命令任务正在进行" })
+    }))
 }
 
 #[tokio::main]
@@ -89,6 +105,10 @@ async fn main() -> anyhow::Result<()> {
         .route("/auth/session", get(session_status))
         .route("/auth/logout", post(logout))
         .route("/cache/refresh", post(refresh_runtime_cache))
+        .route("/jobs/current", get(job_current))
+        .route("/jobs/:id", get(job_snapshot))
+        .route("/jobs/:id/stream", get(job_stream))
+        .route("/jobs/:id/cancel", post(job_cancel))
         .route("/agents", get(list_agents))
         .route("/agents/:id/install", post(install_agent))
         .route("/agents/:id/upgrade", post(upgrade_agent))
@@ -283,27 +303,36 @@ async fn install_agent(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
     Path(agent_id): Path<String>,
-) -> Result<Json<RuntimeActionResult>, ApiError> {
+) -> Result<Json<CommandJobStartResponse>, ApiError> {
     ensure_authenticated(&state, &headers)?;
-    Ok(Json(state.install_agent(&agent_id)?))
+    state
+        .start_agent_install_job(agent_id)
+        .map(Json)
+        .map_err(map_job_busy)
 }
 
 async fn upgrade_agent(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
     Path(agent_id): Path<String>,
-) -> Result<Json<RuntimeActionResult>, ApiError> {
+) -> Result<Json<CommandJobStartResponse>, ApiError> {
     ensure_authenticated(&state, &headers)?;
-    Ok(Json(state.upgrade_agent(&agent_id)?))
+    state
+        .start_agent_upgrade_job(agent_id)
+        .map(Json)
+        .map_err(map_job_busy)
 }
 
 async fn uninstall_agent(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
     Path(agent_id): Path<String>,
-) -> Result<Json<RuntimeActionResult>, ApiError> {
+) -> Result<Json<CommandJobStartResponse>, ApiError> {
     ensure_authenticated(&state, &headers)?;
-    Ok(Json(state.uninstall_agent(&agent_id)?))
+    state
+        .start_agent_uninstall_job(agent_id)
+        .map(Json)
+        .map_err(map_job_busy)
 }
 
 async fn list_plugins(
@@ -327,36 +356,48 @@ async fn install_plugin(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
     Path(plugin_id): Path<String>,
-) -> Result<Json<RuntimeActionResult>, ApiError> {
+) -> Result<Json<CommandJobStartResponse>, ApiError> {
     ensure_authenticated(&state, &headers)?;
-    Ok(Json(state.install_plugin(&plugin_id)?))
+    state
+        .start_plugin_install_job(plugin_id)
+        .map(Json)
+        .map_err(map_job_busy)
 }
 
 async fn upgrade_plugin(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
     Path(plugin_id): Path<String>,
-) -> Result<Json<RuntimeActionResult>, ApiError> {
+) -> Result<Json<CommandJobStartResponse>, ApiError> {
     ensure_authenticated(&state, &headers)?;
-    Ok(Json(state.upgrade_plugin(&plugin_id)?))
+    state
+        .start_plugin_upgrade_job(plugin_id)
+        .map(Json)
+        .map_err(map_job_busy)
 }
 
 async fn uninstall_plugin(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
     Path(plugin_id): Path<String>,
-) -> Result<Json<RuntimeActionResult>, ApiError> {
+) -> Result<Json<CommandJobStartResponse>, ApiError> {
     ensure_authenticated(&state, &headers)?;
-    Ok(Json(state.uninstall_plugin(&plugin_id)?))
+    state
+        .start_plugin_uninstall_job(plugin_id)
+        .map(Json)
+        .map_err(map_job_busy)
 }
 
 async fn paseo_daemon_action(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
     Path((plugin_id, action)): Path<(String, String)>,
-) -> Result<Json<ActionMessage>, ApiError> {
+) -> Result<Json<CommandJobStartResponse>, ApiError> {
     ensure_authenticated(&state, &headers)?;
-    Ok(Json(state.paseo_daemon_action(&plugin_id, &action)?))
+    state
+        .start_plugin_daemon_job(plugin_id, action)
+        .map(Json)
+        .map_err(map_job_busy)
 }
 
 async fn runtime_status(
@@ -370,17 +411,23 @@ async fn runtime_status(
 async fn install_runtime(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
-) -> Result<Json<RuntimeActionResult>, ApiError> {
+) -> Result<Json<CommandJobStartResponse>, ApiError> {
     ensure_authenticated(&state, &headers)?;
-    Ok(Json(state.install_cursor_runtime()?))
+    state
+        .start_agent_install_job("cursor".to_string())
+        .map(Json)
+        .map_err(map_job_busy)
 }
 
 async fn upgrade_runtime(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
-) -> Result<Json<RuntimeActionResult>, ApiError> {
+) -> Result<Json<CommandJobStartResponse>, ApiError> {
     ensure_authenticated(&state, &headers)?;
-    Ok(Json(state.upgrade_cursor_runtime()?))
+    state
+        .start_agent_upgrade_job("cursor".to_string())
+        .map(Json)
+        .map_err(map_job_busy)
 }
 
 async fn account_status(
@@ -554,19 +601,28 @@ async fn skills_cli_preview(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
     Json(payload): Json<SkillsCliSourceRequest>,
-) -> Result<Json<SkillsCliPreviewResult>, ApiError> {
+) -> Result<Json<CommandJobStartResponse>, ApiError> {
     ensure_authenticated(&state, &headers)?;
-    match state.skills_cli_preview(&payload.source) {
-        Ok(result) => Ok(Json(result)),
-        Err(error) => Err(map_skills_cli_error(error)),
+    if payload.source.trim().is_empty() {
+        return Err(ApiError::new(StatusCode::BAD_REQUEST, "请提供有效的仓库或链接"));
     }
+    if !state.skills_cli_status().ready {
+        return Err(ApiError::new(
+            StatusCode::SERVICE_UNAVAILABLE,
+            state.skills_cli_status().message,
+        ));
+    }
+    state
+        .start_skills_cli_preview_job(payload.source)
+        .map(Json)
+        .map_err(map_job_busy)
 }
 
 async fn skills_cli_install(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
     Json(payload): Json<SkillsCliInstallRequest>,
-) -> Result<Json<SkillsCliInstallResult>, ApiError> {
+) -> Result<Json<CommandJobStartResponse>, ApiError> {
     ensure_authenticated(&state, &headers)?;
     if !state.skills_cli_status().ready {
         return Err(ApiError::new(
@@ -574,27 +630,56 @@ async fn skills_cli_install(
             state.skills_cli_status().message,
         ));
     }
-    match state.skills_cli_install(&payload) {
-        Ok(result) => Ok(Json(result)),
-        Err(error) => Err(map_skills_cli_error(error)),
+    if payload.skills.is_empty() {
+        return Err(ApiError::new(StatusCode::BAD_REQUEST, "请至少选择一个 skill"));
     }
+    if payload.agents.is_empty() {
+        return Err(ApiError::new(StatusCode::BAD_REQUEST, "请至少选择一个 agent"));
+    }
+    state
+        .start_skills_cli_install_job(payload)
+        .map(Json)
+        .map_err(map_job_busy)
 }
 
-fn map_skills_cli_error(error: anyhow::Error) -> ApiError {
-    let message = error.to_string();
-    let status = if message.contains("请提供有效的仓库或链接")
-        || message.contains("请至少选择")
-        || message.contains("未知或未支持的 agent")
-    {
-        StatusCode::BAD_REQUEST
-    } else if message.contains("Skills CLI 不可用") {
-        StatusCode::SERVICE_UNAVAILABLE
-    } else if message.contains("无法获取 skill 列表") || message.contains("安装失败") {
-        StatusCode::BAD_GATEWAY
-    } else {
-        StatusCode::INTERNAL_SERVER_ERROR
-    };
-    ApiError::new(status, message)
+async fn job_current(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Result<Json<CommandJobCurrentResponse>, ApiError> {
+    ensure_authenticated(&state, &headers)?;
+    Ok(Json(state.job_current()))
+}
+
+async fn job_snapshot(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(job_id): Path<String>,
+) -> Result<Json<CommandJobSnapshot>, ApiError> {
+    ensure_authenticated(&state, &headers)?;
+    Ok(Json(state.job_snapshot(&job_id)?))
+}
+
+async fn job_cancel(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(job_id): Path<String>,
+) -> Result<Json<ActionMessage>, ApiError> {
+    ensure_authenticated(&state, &headers)?;
+    Ok(Json(state.cancel_job(&job_id)?))
+}
+
+async fn job_stream(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(job_id): Path<String>,
+) -> Result<Sse<impl futures_util::Stream<Item = Result<Event, Infallible>> + Send>, ApiError> {
+    ensure_authenticated(&state, &headers)?;
+    let _ = state.job_snapshot(&job_id)?;
+    let registry = state.jobs();
+    let stream = registry.subscribe_stream(job_id).map(|event| {
+        Ok(Event::default().event(event.name).data(event.data))
+    });
+    Ok(Sse::new(stream).keep_alive(KeepAlive::default()))
 }
 
 fn ensure_authenticated(state: &AppState, headers: &HeaderMap) -> Result<(), ApiError> {

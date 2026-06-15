@@ -34,4 +34,5 @@ Skills 页增加「安装 Skill」入口：输入仓库或链接 → 后端列�
 
 ## 变更日志
 
+- 2026-06-15：preview/install API 改为 Command Job 模式（立即返回 `job_id`，结果在 SSE `done.result`）；移除服务端 install mutex，改由全局 `JobRegistry` 单槽互斥。
 - 2026-06-15：随 `2026-06-15-skills-cli-install` feature 首次落地（Web 向导 + 三条 `/api/profile/skills/cli/*` 端点 + runtime 镜像含 Node）。

@@ -1,6 +1,8 @@
 import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
 import { getErrorMessage, requestJson } from "./api";
+import { CommandJobPanel } from "./components/CommandJobPanel";
 import { PageLoading, StatusBanner } from "./components/ui";
+import { CommandJobProvider } from "./context/CommandJobContext";
 import { AgentsPage } from "./pages/AgentsPage";
 import { OverviewPage } from "./pages/OverviewPage";
 import { PluginsPage } from "./pages/PluginsPage";
@@ -202,7 +204,8 @@ export default function App() {
   }
 
   return (
-    <div className="app-shell">
+    <CommandJobProvider onNotify={notify}>
+      <div className="app-shell">
       <aside className="sidebar">
         <div className="sidebar__brand">
           <h1>agent-manager</h1>
@@ -250,8 +253,10 @@ export default function App() {
 
         <main className="main-body">
           {renderPage()}
+          <CommandJobPanel />
         </main>
       </div>
     </div>
+    </CommandJobProvider>
   );
 }

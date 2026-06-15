@@ -6,5 +6,6 @@ target/
 apps/web/node_modules/
 apps/web/dist/
 .local/
+.playwright-cli/
 *.tsbuildinfo
 local-deploy/

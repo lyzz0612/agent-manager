@@ -5,7 +5,10 @@ use host_fs::{
     PASEO_PLUGIN_ID, SUPPORTED_PLUGINS,
 };
 use host_model::{ActionMessage, PluginDetail, PluginSummary, RuntimeActionResult};
-use host_proc::{run_command_capture_with_env, run_command_capture_with_env_timeout, run_command_with_env};
+use host_proc::{
+    run_command_capture_with_env, run_command_capture_with_env_timeout, run_command_streaming_with_env,
+    CommandLineSink, OutputStream,
+};
 use std::time::Duration;
 use serde_json::{json, Map, Value};
 use std::collections::BTreeMap;
@@ -57,30 +60,55 @@ impl PaseoProvider {
     }
 
     pub fn install_plugin(&self, plugin_id: &str) -> Result<RuntimeActionResult> {
+        self.install_plugin_with_sink(plugin_id, &NoopSink)
+    }
+
+    pub fn install_plugin_with_sink(
+        &self,
+        plugin_id: &str,
+        sink: &dyn CommandLineSink,
+    ) -> Result<RuntimeActionResult> {
         let definition = find_plugin_definition(plugin_id)?;
         if !definition.install_supported {
             return Err(anyhow!("暂不支持安装插件: {plugin_id}"));
         }
 
         match plugin_id {
-            PASEO_PLUGIN_ID => self.install_paseo(),
+            PASEO_PLUGIN_ID => self.install_paseo_with_sink(sink),
             other => Err(anyhow!("暂不支持安装插件: {other}")),
         }
     }
 
     pub fn upgrade_plugin(&self, plugin_id: &str) -> Result<RuntimeActionResult> {
+        self.upgrade_plugin_with_sink(plugin_id, &NoopSink)
+    }
+
+    pub fn upgrade_plugin_with_sink(
+        &self,
+        plugin_id: &str,
+        sink: &dyn CommandLineSink,
+    ) -> Result<RuntimeActionResult> {
         let definition = find_plugin_definition(plugin_id)?;
         if !definition.install_supported {
             return Err(anyhow!("暂不支持升级插件: {plugin_id}"));
         }
 
         match plugin_id {
-            PASEO_PLUGIN_ID => self.upgrade_paseo(),
+            PASEO_PLUGIN_ID => self.upgrade_paseo_with_sink(sink),
             other => Err(anyhow!("暂不支持升级插件: {other}")),
         }
     }
 
     pub fn daemon_action(&self, plugin_id: &str, action: &str) -> Result<ActionMessage> {
+        self.daemon_action_with_sink(plugin_id, action, &NoopSink)
+    }
+
+    pub fn daemon_action_with_sink(
+        &self,
+        plugin_id: &str,
+        action: &str,
+        sink: &dyn CommandLineSink,
+    ) -> Result<ActionMessage> {
         if plugin_id != PASEO_PLUGIN_ID {
             return Err(anyhow!("暂不支持 daemon 操作: {plugin_id}"));
         }
@@ -100,12 +128,13 @@ impl PaseoProvider {
         let home = user_home_dir()?;
         let env = self.user_env(&home);
         let binary = resolve_paseo_cli_binary(&home, &env)?;
-        run_paseo_cli(
+        run_paseo_cli_with_sink(
             &binary,
             &["daemon", command],
             &home,
             &env,
             Some(Duration::from_secs(15)),
+            sink,
         )?;
 
         let message = match command {
@@ -121,13 +150,21 @@ impl PaseoProvider {
     }
 
     pub fn uninstall_plugin(&self, plugin_id: &str) -> Result<RuntimeActionResult> {
+        self.uninstall_plugin_with_sink(plugin_id, &NoopSink)
+    }
+
+    pub fn uninstall_plugin_with_sink(
+        &self,
+        plugin_id: &str,
+        sink: &dyn CommandLineSink,
+    ) -> Result<RuntimeActionResult> {
         let definition = find_plugin_definition(plugin_id)?;
         if !definition.install_supported {
             return Err(anyhow!("暂不支持卸载插件: {plugin_id}"));
         }
 
         match plugin_id {
-            PASEO_PLUGIN_ID => self.uninstall_paseo(),
+            PASEO_PLUGIN_ID => self.uninstall_paseo_with_sink(sink),
             other => Err(anyhow!("暂不支持卸载插件: {other}")),
         }
     }
@@ -243,11 +280,20 @@ impl PaseoProvider {
     }
 
     fn install_paseo(&self) -> Result<RuntimeActionResult> {
+        self.install_paseo_with_sink(&NoopSink)
+    }
+
+    fn install_paseo_with_sink(&self, sink: &dyn CommandLineSink) -> Result<RuntimeActionResult> {
         let home = user_home_dir()?;
         let env = self.user_env(&home);
 
-        run_command_with_env("npm", &["install", "-g", "@getpaseo/cli"], &home, &env)
-            .context("failed to install @getpaseo/cli via npm")?;
+        run_npm_streaming(
+            &["install", "-g", "@getpaseo/cli"],
+            &home,
+            &env,
+            sink,
+        )
+        .context("failed to install @getpaseo/cli via npm")?;
 
         fs::create_dir_all(PASEO_DEFAULT_WORKSPACE).with_context(|| {
             format!("failed to create default workspace directory: {PASEO_DEFAULT_WORKSPACE}")
@@ -275,6 +321,10 @@ impl PaseoProvider {
     }
 
     fn upgrade_paseo(&self) -> Result<RuntimeActionResult> {
+        self.upgrade_paseo_with_sink(&NoopSink)
+    }
+
+    fn upgrade_paseo_with_sink(&self, sink: &dyn CommandLineSink) -> Result<RuntimeActionResult> {
         let status = self.plugin_runtime_status(PASEO_PLUGIN_ID);
         if !status.installed {
             return Err(anyhow!("当前未检测到已安装的 Paseo CLI，无法执行升级"));
@@ -283,11 +333,11 @@ impl PaseoProvider {
         let home = user_home_dir()?;
         let env = self.user_env(&home);
 
-        run_command_with_env(
-            "npm",
+        run_npm_streaming(
             &["install", "-g", "@getpaseo/cli@latest"],
             &home,
             &env,
+            sink,
         )
         .context("failed to upgrade @getpaseo/cli via npm")?;
 
@@ -306,6 +356,10 @@ impl PaseoProvider {
     }
 
     fn uninstall_paseo(&self) -> Result<RuntimeActionResult> {
+        self.uninstall_paseo_with_sink(&NoopSink)
+    }
+
+    fn uninstall_paseo_with_sink(&self, sink: &dyn CommandLineSink) -> Result<RuntimeActionResult> {
         let home = user_home_dir()?;
         let env = self.user_env(&home);
 
@@ -316,7 +370,7 @@ impl PaseoProvider {
         }
 
         if is_paseo_installed(&home, &env) {
-            run_command_with_env("npm", &["uninstall", "-g", "@getpaseo/cli"], &home, &env)
+            run_npm_streaming(&["uninstall", "-g", "@getpaseo/cli"], &home, &env, sink)
                 .context("failed to uninstall @getpaseo/cli via npm")?;
         } else {
             return Err(anyhow!("当前未检测到已安装的 Paseo CLI，无法执行卸载"));
@@ -496,6 +550,82 @@ fn run_paseo_cli(
     }
 
     Ok(capture.output.trim().to_string())
+}
+
+fn run_paseo_cli_with_sink(
+    program: &Path,
+    args: &[&str],
+    home: &Path,
+    env: &BTreeMap<String, String>,
+    timeout: Option<Duration>,
+    sink: &dyn CommandLineSink,
+) -> Result<String> {
+    let program_string = program.to_string_lossy().to_string();
+    let (program, arg_refs): (&str, Vec<&str>) = if cfg!(windows) {
+        let lower = program_string.to_lowercase();
+        if lower.ends_with(".cmd") || lower.ends_with(".bat") {
+            let mut wrapped = vec!["/C", program_string.as_str()];
+            wrapped.extend(args);
+            ("cmd", wrapped)
+        } else {
+            (program_string.as_str(), args.to_vec())
+        }
+    } else {
+        (program_string.as_str(), args.to_vec())
+    };
+
+    let handles = host_proc::ProcHandles::new(sink);
+    let capture = run_command_streaming_with_env(
+        program,
+        &arg_refs,
+        home,
+        env,
+        timeout,
+        handles.child(),
+        handles.cancel(),
+        |stream, line| sink.on_line(stream, line),
+    )?;
+
+    if capture.output.trim().is_empty() && capture.success {
+        sink.on_line(OutputStream::Stdout, "命令执行完成");
+    }
+
+    if !capture.success {
+        return Err(anyhow!("paseo command failed: {}", capture.output));
+    }
+
+    Ok(capture.output.trim().to_string())
+}
+
+fn run_npm_streaming(
+    args: &[&str],
+    home: &Path,
+    env: &BTreeMap<String, String>,
+    sink: &dyn CommandLineSink,
+) -> Result<()> {
+    let handles = host_proc::ProcHandles::new(sink);
+    let capture = run_command_streaming_with_env(
+        "npm",
+        args,
+        home,
+        env,
+        Some(Duration::from_secs(120)),
+        handles.child(),
+        handles.cancel(),
+        |stream, line| sink.on_line(stream, line),
+    )?;
+
+    if capture.success {
+        Ok(())
+    } else {
+        Err(anyhow!("npm command failed: {}", capture.output))
+    }
+}
+
+struct NoopSink;
+
+impl CommandLineSink for NoopSink {
+    fn on_line(&self, _stream: OutputStream, _line: &str) {}
 }
 
 fn capture_paseo_cli_output(

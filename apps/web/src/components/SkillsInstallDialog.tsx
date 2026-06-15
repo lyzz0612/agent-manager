@@ -1,5 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { requestJson } from "../api";
+import { CommandJobConflictError } from "../commandJobApi";
+import { useCommandJob } from "../context/CommandJobContext";
 import type {
   AgentSummary,
   SkillsCliCapability,
@@ -24,13 +26,13 @@ type AgentOption = {
 
 export function SkillsInstallDialog(props: SkillsInstallDialogProps) {
   const { open, agents, onClose, onError, onInstalled, onNotify } = props;
+  const { runJob, job } = useCommandJob();
   const [capability, setCapability] = useState<SkillsCliCapability | null>(null);
   const [source, setSource] = useState("");
   const [previewSkills, setPreviewSkills] = useState<SkillsCliPreviewSkill[]>([]);
   const [selectedSkills, setSelectedSkills] = useState<string[]>([]);
   const [selectedAgents, setSelectedAgents] = useState<string[]>([]);
-  const [previewing, setPreviewing] = useState(false);
-  const [installing, setInstalling] = useState(false);
+  const jobBusy = job.active;
 
   const agentOptions = useMemo<AgentOption[]>(
     () => [
@@ -68,24 +70,31 @@ export function SkillsInstallDialog(props: SkillsInstallDialogProps) {
       return;
     }
 
-    setPreviewing(true);
     setPreviewSkills([]);
     setSelectedSkills([]);
 
     try {
-      const result = await requestJson<SkillsCliPreviewResult>(
+      await runJob(
         "/api/profile/skills/cli/preview",
         {
           method: "POST",
           body: JSON.stringify({ source: trimmed }),
         },
+        {
+          onDone: (success, result) => {
+            if (!success || !result) {
+              return;
+            }
+            const preview = result as SkillsCliPreviewResult;
+            setPreviewSkills(preview.skills);
+            setSelectedSkills(preview.skills.map((skill) => skill.name));
+          },
+        },
       );
-      setPreviewSkills(result.skills);
-      setSelectedSkills(result.skills.map((skill) => skill.name));
     } catch (error) {
-      onError(error instanceof Error ? error.message : "预览失败");
-    } finally {
-      setPreviewing(false);
+      if (!(error instanceof CommandJobConflictError)) {
+        onError(error instanceof Error ? error.message : "预览失败");
+      }
     }
   }
 
@@ -104,9 +113,8 @@ export function SkillsInstallDialog(props: SkillsInstallDialogProps) {
       return;
     }
 
-    setInstalling(true);
     try {
-      const result = await requestJson<SkillsCliInstallResult>(
+      await runJob(
         "/api/profile/skills/cli/install",
         {
           method: "POST",
@@ -116,14 +124,24 @@ export function SkillsInstallDialog(props: SkillsInstallDialogProps) {
             agents: selectedAgents,
           }),
         },
+        {
+          onDone: (success, result) => {
+            if (!success) {
+              return;
+            }
+            const install = result as SkillsCliInstallResult | undefined;
+            if (install?.message) {
+              onNotify("success", install.message);
+            }
+            onInstalled();
+            onClose();
+          },
+        },
       );
-      onNotify("success", result.message);
-      onInstalled();
-      onClose();
     } catch (error) {
-      onError(error instanceof Error ? error.message : "安装失败");
-    } finally {
-      setInstalling(false);
+      if (!(error instanceof CommandJobConflictError)) {
+        onError(error instanceof Error ? error.message : "安装失败");
+      }
     }
   }
 
@@ -173,7 +191,7 @@ export function SkillsInstallDialog(props: SkillsInstallDialogProps) {
           </label>
           <input
             className="text-input"
-            disabled={!cliReady || previewing || installing}
+            disabled={!cliReady || jobBusy}
             id="skills-install-source"
             onChange={(event) => setSource(event.target.value)}
             placeholder="例如 vercel-labs/agent-skills"
@@ -184,11 +202,11 @@ export function SkillsInstallDialog(props: SkillsInstallDialogProps) {
           <div className="actions modal-actions">
             <button
               className="secondary"
-              disabled={!cliReady || previewing || installing || !source.trim()}
+              disabled={!cliReady || jobBusy || !source.trim()}
               onClick={() => void handlePreview()}
               type="button"
             >
-              {previewing ? "预览中…" : "预览 skill 列表"}
+              {jobBusy ? "预览中…" : "预览 skill 列表"}
             </button>
           </div>
 
@@ -201,7 +219,7 @@ export function SkillsInstallDialog(props: SkillsInstallDialogProps) {
                     <label className="install-check">
                       <input
                         checked={selectedSkills.includes(skill.name)}
-                        disabled={installing}
+                        disabled={jobBusy}
                         onChange={() => toggleSkill(skill.name)}
                         type="checkbox"
                       />
@@ -227,7 +245,7 @@ export function SkillsInstallDialog(props: SkillsInstallDialogProps) {
                     <label className="install-check install-check--compact">
                       <input
                         checked={selectedAgents.includes(option.id)}
-                        disabled={installing}
+                        disabled={jobBusy}
                         onChange={() => toggleAgent(option.id)}
                         type="checkbox"
                       />
@@ -241,18 +259,18 @@ export function SkillsInstallDialog(props: SkillsInstallDialogProps) {
         </div>
 
         <div className="modal-footer actions">
-          <button className="ghost" disabled={installing} onClick={onClose} type="button">
+          <button className="ghost" disabled={jobBusy} onClick={onClose} type="button">
             取消
           </button>
           <button
             className="primary"
             disabled={
-              !cliReady || installing || previewSkills.length === 0 || selectedSkills.length === 0
+              !cliReady || jobBusy || previewSkills.length === 0 || selectedSkills.length === 0
             }
             onClick={() => void handleInstall()}
             type="button"
           >
-            {installing ? "安装中…" : "安装"}
+            {jobBusy ? "安装中…" : "安装"}
           </button>
         </div>
       </div>

@@ -322,3 +322,44 @@ pub struct AppUpdateStatus {
     pub version: String,
     pub git_commit: Option<String>,
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CommandJobStartResponse {
+    pub job_id: String,
+    pub kind: String,
+    pub label: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CommandJobBusyResponse {
+    pub error: String,
+    pub active_job_id: String,
+    pub kind: String,
+    pub label: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CommandJobCurrentResponse {
+    pub active: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub job_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub kind: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub phase: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CommandJobSnapshot {
+    pub job_id: String,
+    pub kind: String,
+    pub label: String,
+    pub active: bool,
+    pub phase: String,
+    pub message: String,
+    pub line_count: u32,
+}

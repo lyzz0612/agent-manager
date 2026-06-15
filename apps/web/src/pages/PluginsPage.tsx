@@ -1,8 +1,10 @@
 import { useEffect, useMemo, useState } from "react";
 import { isAbortError, requestJson } from "../api";
+import { CommandJobConflictError } from "../commandJobApi";
 import { PageLoading, Panel } from "../components/ui";
 import { GhPluginDetailView } from "../components/plugins/GhPluginDetailView";
 import { PaseoPluginDetailView } from "../components/plugins/PaseoPluginDetailView";
+import { useCommandJob } from "../context/CommandJobContext";
 import { AppRoute, buildPluginPath } from "../routing";
 import type { PluginDetail, PluginSummary, RuntimeActionResult } from "../types";
 import { resolveInstallCommand } from "../utils";
@@ -20,6 +22,7 @@ export function PluginsPage({ route, refreshKey, navigate, onNotify, onError }: 
   const [plugins, setPlugins] = useState<PluginSummary[]>([]);
   const [pluginDetail, setPluginDetail] = useState<PluginDetail | null>(null);
   const [loading, setLoading] = useState(true);
+  const { runJob, job } = useCommandJob();
 
   useEffect(() => {
     const controller = new AbortController();
@@ -84,37 +87,40 @@ export function PluginsPage({ route, refreshKey, navigate, onNotify, onError }: 
     }
 
     try {
-      const result = await requestJson<RuntimeActionResult>(
-        `/api/plugins/${encodeURIComponent(targetPluginId)}/${action}`,
-        { method: "POST" },
-      );
-
-      if (action === "uninstall" && !result.installed) {
-        navigate("/plugins");
-        onNotify("success", result.message);
-        return;
-      }
-
-      if (action === "install" && result.installed) {
-        navigate(buildPluginPath(targetPluginId));
-      }
-
-      setPlugins((current) =>
-        current.map((plugin) =>
-          plugin.id === targetPluginId
-            ? {
-                ...plugin,
-                installed: result.installed,
-                version: result.version,
-                install_dir: result.install_dir,
-                data_dir: result.data_dir,
-              }
-            : plugin,
-        ),
-      );
-      onNotify("success", result.message);
+      await runJob(`/api/plugins/${encodeURIComponent(targetPluginId)}/${action}`, {
+        method: "POST",
+      }, {
+        onDone: (success, result) => {
+          if (!success || !result) {
+            return;
+          }
+          const runtime = result as RuntimeActionResult;
+          if (action === "uninstall" && !runtime.installed) {
+            navigate("/plugins");
+            return;
+          }
+          if (action === "install" && runtime.installed) {
+            navigate(buildPluginPath(targetPluginId));
+          }
+          setPlugins((current) =>
+            current.map((plugin) =>
+              plugin.id === targetPluginId
+                ? {
+                    ...plugin,
+                    installed: runtime.installed,
+                    version: runtime.version,
+                    install_dir: runtime.install_dir,
+                    data_dir: runtime.data_dir,
+                  }
+                : plugin,
+            ),
+          );
+        },
+      });
     } catch (error) {
-      onError(error instanceof Error ? error.message : "操作失败");
+      if (!(error instanceof CommandJobConflictError)) {
+        onError(error instanceof Error ? error.message : "操作失败");
+      }
     }
   }
 
@@ -130,16 +136,25 @@ export function PluginsPage({ route, refreshKey, navigate, onNotify, onError }: 
     action: "start" | "stop" | "restart",
   ) {
     try {
-      const result = await requestJson<{ message: string }>(
+      await runJob(
         `/api/plugins/${encodeURIComponent(targetPluginId)}/daemon/${action}`,
         { method: "POST" },
+        {
+          onDone: (success) => {
+            if (success) {
+              void reloadPluginDetail(targetPluginId);
+            }
+          },
+        },
       );
-      await reloadPluginDetail(targetPluginId);
-      onNotify("success", result.message);
     } catch (error) {
-      onError(error instanceof Error ? error.message : "Daemon 操作失败");
+      if (!(error instanceof CommandJobConflictError)) {
+        onError(error instanceof Error ? error.message : "Daemon 操作失败");
+      }
     }
   }
+
+  const actionBusy = job.active;
 
   if (loading) {
     return <PageLoading label={pluginId ? "正在加载插件详情..." : "正在加载 Plugins..."} />;
@@ -227,7 +242,7 @@ export function PluginsPage({ route, refreshKey, navigate, onNotify, onError }: 
                 <>
                   <button
                     className="secondary"
-                    disabled={!plugin.install_supported}
+                    disabled={!plugin.install_supported || actionBusy}
                     onClick={(event) => {
                       event.stopPropagation();
                       void handlePluginAction(plugin.id, "upgrade", plugin.name);
@@ -238,7 +253,7 @@ export function PluginsPage({ route, refreshKey, navigate, onNotify, onError }: 
                   </button>
                   <button
                     className="danger"
-                    disabled={!plugin.install_supported}
+                    disabled={!plugin.install_supported || actionBusy}
                     onClick={(event) => {
                       event.stopPropagation();
                       void handlePluginAction(plugin.id, "uninstall", plugin.name);
@@ -251,7 +266,7 @@ export function PluginsPage({ route, refreshKey, navigate, onNotify, onError }: 
               ) : (
                 <button
                   className="primary"
-                  disabled={!plugin.install_supported}
+                  disabled={!plugin.install_supported || actionBusy}
                   onClick={(event) => {
                     event.stopPropagation();
                     void handlePluginAction(plugin.id, "install", plugin.name);

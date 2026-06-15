@@ -1,3 +1,4 @@
+mod command_jobs;
 mod runtime_cache;
 mod update;
 
@@ -5,7 +6,8 @@ use anyhow::{bail, Context, Result};
 use cursor_provider::CursorProvider;
 use host_model::{
     ActionMessage, AgentSummary, AppSettings, AppStatus, AppUpdateResult, AppUpdateStatus,
-    CacheRefreshRequest, CursorAccountStatus, CursorAuthFlowStatus, CursorLoginSessionStatus,
+    CacheRefreshRequest, CommandJobBusyResponse, CommandJobCurrentResponse, CommandJobSnapshot,
+    CommandJobStartResponse, CursorAccountStatus, CursorAuthFlowStatus, CursorLoginSessionStatus,
     CursorLoginStartResult, CursorRuntimeStatus, GhAccountStatus, GhAuthFlowStatus,
     GhLoginSessionStatus, GhLoginStartResult, KnownConfig, OverviewAgentItem, OverviewData,
     OverviewPluginItem, PluginDetail, PluginSummary, RawConfigDocument, RawConfigPreview,
@@ -14,6 +16,7 @@ use host_model::{
 };
 use gh_provider::GhProvider;
 use host_fs::{GH_PLUGIN_ID, PASEO_PLUGIN_ID};
+use host_jobs::JobRegistry;
 use paseo_provider::PaseoProvider;
 use runtime_cache::{RefreshScope, RefreshTiming, RuntimeCache};
 use std::collections::HashSet;
@@ -24,6 +27,7 @@ use std::sync::{Arc, RwLock};
 use tracing::{info, warn};
 use uuid::Uuid;
 
+pub use command_jobs::start_jobs;
 pub use update::parse_update_worker_parent_pid;
 
 pub const DEFAULT_DEV_TOKEN: &str = "123456";
@@ -111,6 +115,7 @@ pub struct AppState {
     pub config: AppConfig,
     pub sessions: Arc<RwLock<HashSet<String>>>,
     cache: Arc<RwLock<RuntimeCache>>,
+    jobs: Arc<JobRegistry>,
 }
 
 impl AppState {
@@ -120,6 +125,7 @@ impl AppState {
             config,
             sessions: Arc::new(RwLock::new(HashSet::new())),
             cache: Arc::new(RwLock::new(RuntimeCache::new())),
+            jobs: Arc::new(JobRegistry::new()),
         })
     }
 
@@ -187,6 +193,25 @@ impl AppState {
         )
         .map_err(|message| anyhow::anyhow!(message))?;
         self.refresh_cache(scope)
+    }
+
+    pub fn jobs(&self) -> Arc<JobRegistry> {
+        Arc::clone(&self.jobs)
+    }
+
+    pub fn job_current(&self) -> CommandJobCurrentResponse {
+        self.jobs.current()
+    }
+
+    pub fn job_snapshot(&self, job_id: &str) -> Result<CommandJobSnapshot> {
+        self.jobs.snapshot(job_id)
+    }
+
+    pub fn cancel_job(&self, job_id: &str) -> Result<ActionMessage> {
+        self.jobs.cancel(job_id)?;
+        Ok(ActionMessage {
+            message: "任务已取消".to_string(),
+        })
     }
 
     pub fn login(&self, token: &str) -> Option<String> {
@@ -548,7 +573,7 @@ impl AppState {
         plugins
     }
 
-    fn plugin_provider(
+    pub(crate) fn plugin_provider(
         &self,
         plugin_id: &str,
     ) -> Result<PluginProviderRef> {
@@ -653,7 +678,7 @@ impl AppState {
         }
     }
 
-    fn after_agent_mutation(&self) {
+    pub(crate) fn after_agent_mutation(&self) {
         self.refresh_after_mutation(|| {
             self.refresh_overview_bundle()?;
             self.refresh_cursor_runtime_internal()?;
@@ -662,7 +687,7 @@ impl AppState {
         });
     }
 
-    fn after_plugin_mutation(&self, plugin_id: &str) {
+    pub(crate) fn after_plugin_mutation(&self, plugin_id: &str) {
         let plugin_id = plugin_id.to_string();
         self.refresh_after_mutation(|| {
             self.refresh_overview_bundle()?;
@@ -675,7 +700,7 @@ impl AppState {
         });
     }
 
-    fn after_daemon_mutation(&self, plugin_id: &str) {
+    pub(crate) fn after_daemon_mutation(&self, plugin_id: &str) {
         let plugin_id = plugin_id.to_string();
         self.refresh_after_mutation(|| {
             self.refresh_plugins_internal()?;
@@ -709,11 +734,11 @@ impl AppState {
         }
     }
 
-    fn provider(&self) -> CursorProvider {
+    pub(crate) fn provider(&self) -> CursorProvider {
         CursorProvider::new()
     }
 
-    fn paseo_provider(&self) -> PaseoProvider {
+    pub(crate) fn paseo_provider(&self) -> PaseoProvider {
         PaseoProvider::new()
     }
 
@@ -722,7 +747,7 @@ impl AppState {
     }
 }
 
-enum PluginProviderRef {
+pub(crate) enum PluginProviderRef {
     Paseo(PaseoProvider),
     Gh(GhProvider),
 }
@@ -746,6 +771,39 @@ impl PluginProviderRef {
         match self {
             Self::Paseo(provider) => provider.uninstall_plugin(plugin_id),
             Self::Gh(provider) => provider.uninstall_plugin(plugin_id),
+        }
+    }
+
+    pub(crate) fn install_plugin_with_sink(
+        &self,
+        plugin_id: &str,
+        sink: &dyn host_proc::CommandLineSink,
+    ) -> Result<RuntimeActionResult> {
+        match self {
+            Self::Paseo(provider) => provider.install_plugin_with_sink(plugin_id, sink),
+            Self::Gh(provider) => provider.install_plugin_with_sink(plugin_id, sink),
+        }
+    }
+
+    pub(crate) fn upgrade_plugin_with_sink(
+        &self,
+        plugin_id: &str,
+        sink: &dyn host_proc::CommandLineSink,
+    ) -> Result<RuntimeActionResult> {
+        match self {
+            Self::Paseo(provider) => provider.upgrade_plugin_with_sink(plugin_id, sink),
+            Self::Gh(provider) => provider.upgrade_plugin_with_sink(plugin_id, sink),
+        }
+    }
+
+    pub(crate) fn uninstall_plugin_with_sink(
+        &self,
+        plugin_id: &str,
+        sink: &dyn host_proc::CommandLineSink,
+    ) -> Result<RuntimeActionResult> {
+        match self {
+            Self::Paseo(provider) => provider.uninstall_plugin_with_sink(plugin_id, sink),
+            Self::Gh(provider) => provider.uninstall_plugin_with_sink(plugin_id, sink),
         }
     }
 }

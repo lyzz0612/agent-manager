@@ -4,21 +4,18 @@ use host_model::{
     SkillsCliCapability, SkillsCliInstallRequest, SkillsCliInstallResult, SkillsCliPreviewResult,
     SkillsCliPreviewSkill,
 };
-use host_proc::run_command_capture_with_env_timeout;
+use host_proc::{
+    run_command_capture_with_env_timeout, run_command_streaming_with_env, CommandLineSink,
+    OutputStream,
+};
 use regex::Regex;
 use std::collections::BTreeMap;
 use std::path::Path;
-use std::sync::{Mutex, OnceLock};
+use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 use tracing::info;
 
 const CLI_TIMEOUT: Duration = Duration::from_secs(120);
-
-static INSTALL_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-
-fn install_lock() -> &'static Mutex<()> {
-    INSTALL_LOCK.get_or_init(|| Mutex::new(()))
-}
 
 pub fn skills_cli_status() -> SkillsCliCapability {
     let Ok(home) = user_home_dir() else {
@@ -64,18 +61,25 @@ pub fn skills_cli_status() -> SkillsCliCapability {
 }
 
 pub fn skills_cli_preview(source: &str) -> Result<SkillsCliPreviewResult> {
+    skills_cli_preview_with_sink(source, &NoopSink)
+}
+
+pub fn skills_cli_preview_with_sink(
+    source: &str,
+    sink: &dyn CommandLineSink,
+) -> Result<SkillsCliPreviewResult> {
     let normalized = normalize_source(source)?;
     ensure_ready()?;
 
     let home = user_home_dir()?;
     let env = cli_env(&home);
     let started = Instant::now();
-    let capture = run_command_capture_with_env_timeout(
-        "npx",
+    let capture = run_npx_skills(
         &["skills", "add", &normalized, "-l", "-y"],
         &home,
         &env,
-        Some(CLI_TIMEOUT),
+        CLI_TIMEOUT,
+        sink,
     )
     .context("failed to run skills preview")?;
 
@@ -107,6 +111,13 @@ pub fn skills_cli_preview(source: &str) -> Result<SkillsCliPreviewResult> {
 }
 
 pub fn skills_cli_install(request: &SkillsCliInstallRequest) -> Result<SkillsCliInstallResult> {
+    skills_cli_install_with_sink(request, &NoopSink)
+}
+
+pub fn skills_cli_install_with_sink(
+    request: &SkillsCliInstallRequest,
+    sink: &dyn CommandLineSink,
+) -> Result<SkillsCliInstallResult> {
     let normalized = normalize_source(&request.source)?;
     ensure_ready()?;
 
@@ -132,9 +143,6 @@ pub fn skills_cli_install(request: &SkillsCliInstallRequest) -> Result<SkillsCli
 
     let home = user_home_dir()?;
     let env = cli_env(&home);
-    let _guard = install_lock()
-        .lock()
-        .map_err(|_| anyhow!("另一个 skill 安装正在进行，请稍后重试"))?;
 
     let mut args = vec![
         "skills".to_string(),
@@ -153,14 +161,8 @@ pub fn skills_cli_install(request: &SkillsCliInstallRequest) -> Result<SkillsCli
 
     let arg_refs: Vec<&str> = args.iter().map(String::as_str).collect();
     let started = Instant::now();
-    let capture = run_command_capture_with_env_timeout(
-        "npx",
-        &arg_refs,
-        &home,
-        &env,
-        Some(CLI_TIMEOUT),
-    )
-    .context("failed to run skills install")?;
+    let capture = run_npx_skills(&arg_refs, &home, &env, CLI_TIMEOUT, sink)
+        .context("failed to run skills install")?;
 
     info!(
         source = %normalized,
@@ -290,12 +292,40 @@ fn is_meaningful_cli_line(line: &str) -> bool {
         .all(|c| matches!(c, '|' | '│' | '◇' | '○' | '●' | '◆' | '•' | '·' | '—' | '-' | ' '))
 }
 
+fn run_npx_skills(
+    args: &[&str],
+    home: &Path,
+    env: &BTreeMap<String, String>,
+    timeout: Duration,
+    sink: &dyn CommandLineSink,
+) -> Result<host_proc::CommandCapture> {
+    use host_proc::ProcHandles;
+
+    let handles = ProcHandles::new(sink);
+    run_command_streaming_with_env(
+        "npx",
+        args,
+        home,
+        env,
+        Some(timeout),
+        handles.child(),
+        handles.cancel(),
+        |stream, line| {
+            if !sink.is_cancelled() {
+                sink.on_line(stream, line);
+            }
+        },
+    )
+}
+
+struct NoopSink;
+
+impl CommandLineSink for NoopSink {
+    fn on_line(&self, _stream: OutputStream, _line: &str) {}
+}
+
 fn strip_ansi(text: &str) -> String {
-    static ANSI_RE: OnceLock<Regex> = OnceLock::new();
-    let re = ANSI_RE.get_or_init(|| {
-        Regex::new(r"\x1b\[[?\d;]*[a-zA-Z]").expect("ansi regex")
-    });
-    re.replace_all(text, "").into_owned()
+    host_proc::strip_ansi(text)
 }
 
 fn normalize_table_line(line: &str) -> String {

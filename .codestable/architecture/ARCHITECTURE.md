@@ -61,6 +61,7 @@ crates/
   gh-provider/
   paseo-provider/
   host-fs/
+  host-jobs/
   host-proc/
   host-model/
 ```
@@ -101,6 +102,49 @@ Phase 1 中，Cursor 安装在容器内受管目录，不依赖宿主机预装�
 - install / upgrade / uninstall、daemon 操作、Cursor / GitHub CLI 登录/登出等 mutation 成功后自动重算
 
 `GET /app/settings` 的 git 信息**不**进缓存；Skills / Profile 文件读写同理。
+
+### 4.5 Command Job（长 CLI 任务）
+
+安装 / 升级 / 卸载 / daemon 启停等**长 CLI 操作**不再阻塞 HTTP 直到命令结束，而是经进程内 **JobRegistry（单槽）** 调度：
+
+1. 领域 `POST` 在 `try_start` 成功后立即返回 `{ job_id, kind, label }`。
+2. worker 线程通过 `host-proc` 流式读行 → `JobContext` 追加日志 → SSE 推送给前端。
+3. 终态发 `done`（含 `success` / `message` / 可选 `result`），释放槽位；成功时触发与现 mutation 一致的 `RuntimeCache` 刷新。
+
+**与 App Update 并存**：`app-core::update` 仍用独立 `UpdateJobState` + `GET /api/app/update/status` 轮询；**v1 不迁入** JobRegistry。
+
+**编排约束**：
+
+- 全局同时仅 **1** 个 Command Job；第二个 `try_start` → **409** + `active_job_id`。
+- 唯一互斥闸口为 `JobRegistry::try_start`（无领域级 install mutex）。
+- worker 读管道用无界 `mpsc`；事件主存储为内存 `events` buffer（供 SSE 回放）；`broadcast` 仅作 live 扇出，send 失败不阻塞 worker。
+- 运行中可 `POST /api/jobs/:id/cancel` 杀子进程并释放槽位。
+- 默认超时 120s；`agent_install`（含 Cursor 官方安装脚本）300s。
+- **不做**：交互式终端、stdin、任务历史列表、磁盘 job 日志、多任务并行。
+
+**通用端点**（均需管理页登录）：
+
+| 端点 | 作用 |
+|---|---|
+| `GET /api/jobs/current` | 当前槽位快照（无任务时 `active: false`） |
+| `GET /api/jobs/:id` | 指定 job 快照（`phase` / `message` / `line_count`） |
+| `GET /api/jobs/:id/stream` | SSE：`phase` / `line` / `done` / `error`（先回放 buffer 再 live） |
+| `POST /api/jobs/:id/cancel` | 取消运行中任务 |
+
+**纳入 job 的领域 POST**（响应均为 `CommandJobStartResponse`）：
+
+| 端点 | JobKind |
+|---|---|
+| `POST /api/profile/skills/cli/preview` | `skills_cli_preview` |
+| `POST /api/profile/skills/cli/install` | `skills_cli_install` |
+| `POST /api/agents/:id/install\|upgrade\|uninstall` | `agent_install` / `agent_upgrade` / `agent_uninstall` |
+| `POST /api/plugins/:id/install\|upgrade\|uninstall` | `plugin_install` / `plugin_upgrade` / `plugin_uninstall` |
+| `POST /api/plugins/:id/daemon/:action` | `plugin_daemon` |
+| `POST /api/cursor/runtime/install\|upgrade` | 同 `agent_install` / `agent_upgrade`（`cursor`） |
+
+**前端**：`CommandJobProvider` + 全局 `CommandJobPanel`（`App.tsx`）；各 mutation 页通过 `useCommandJob().runJob` 启动并订阅 SSE；409 时提示并订阅当前 `active_job_id`。
+
+**Crate 边界**：`host-jobs`（Registry / SSE）、`host-proc`（流式子进程 + `ProcHandles` 共享 cancel/child）、`app-core::command_jobs`（各领域 `start_*_job`）。
 
 ## 5. 账号与登录
 
@@ -170,12 +214,12 @@ Phase 1 管理用户级 skill 目录（`~/.agents/skills`、`~/.cursor/skills` �
 | 端点 | 作用 |
 |---|---|
 | `GET /api/profile/skills/cli/status` | 探测 Node + `npx skills` 是否可用（`ready` 为 false 仍 200，便于 UI 展示原因） |
-| `POST /api/profile/skills/cli/preview` | 对 source 执行 `add -l`，解析可选 skill 列表，**不写入目录** |
-| `POST /api/profile/skills/cli/install` | `npx skills add … -g -y --copy`，按 `SkillsAgentMap` 映射 `--agent` |
+| `POST /api/profile/skills/cli/preview` | 启动 **Command Job**：对 source 执行 `add -l`，流式日志；`done.result` 含可选 skill 列表 |
+| `POST /api/profile/skills/cli/install` | 启动 **Command Job**：`npx skills add … -g -y --copy`；`done.result` 含 `SkillsCliInstallResult` |
 
 `common` → npx agent `zed`（`~/.agents/skills`）；`cursor` → `cursor`（`~/.cursor/skills`）。未映射的 agent scope 不可安装。
 
-编排约束：preview / install CLI 超时 120s；install 请求服务端串行（mutex）；Skills 列表**不进** `RuntimeCache`。
+编排约束：preview / install CLI 超时 120s；**全局单槽**由 `JobRegistry` 互斥（不再使用 install mutex）；Skills 列表**不进** `RuntimeCache`。
 
 运行时镜像（Docker `runtime` stage）从 web-builder 复制 Node 22 + npx，使 Compose 部署下 `status.ready` 可为 true。
 

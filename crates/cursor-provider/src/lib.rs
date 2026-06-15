@@ -15,7 +15,9 @@ use host_model::{
 };
 
 mod skills_cli;
-use host_proc::run_command_with_env;
+use host_proc::{
+    run_command_streaming_with_env, CommandLineSink, OutputStream,
+};
 use regex::Regex;
 use serde_json::{json, Map, Value};
 use std::collections::BTreeMap;
@@ -93,13 +95,68 @@ impl CursorProvider {
         }
     }
 
+    pub fn install_agent_with_sink(
+        &self,
+        agent_id: &str,
+        sink: &dyn CommandLineSink,
+    ) -> Result<RuntimeActionResult> {
+        let definition = find_agent_definition(agent_id)?;
+        if !definition.install_supported {
+            return Err(anyhow!("暂不支持安装 agent: {agent_id}"));
+        }
+
+        match agent_id {
+            CURSOR_AGENT_ID => self.install_latest_runtime_with_sink(sink),
+            other => Err(anyhow!("暂不支持安装 agent: {other}")),
+        }
+    }
+
+    pub fn upgrade_agent_with_sink(
+        &self,
+        agent_id: &str,
+        sink: &dyn CommandLineSink,
+    ) -> Result<RuntimeActionResult> {
+        let definition = find_agent_definition(agent_id)?;
+        if !definition.install_supported {
+            return Err(anyhow!("暂不支持升级 agent: {agent_id}"));
+        }
+
+        match agent_id {
+            CURSOR_AGENT_ID => self.upgrade_runtime_with_sink(sink),
+            other => Err(anyhow!("暂不支持升级 agent: {other}")),
+        }
+    }
+
+    pub fn uninstall_agent_with_sink(
+        &self,
+        agent_id: &str,
+        sink: &dyn CommandLineSink,
+    ) -> Result<RuntimeActionResult> {
+        let definition = find_agent_definition(agent_id)?;
+        if !definition.install_supported {
+            return Err(anyhow!("暂不支持卸载 agent: {agent_id}"));
+        }
+
+        match agent_id {
+            CURSOR_AGENT_ID => self.uninstall_runtime_with_sink(sink),
+            other => Err(anyhow!("暂不支持卸载 agent: {other}")),
+        }
+    }
+
     pub fn runtime_status(&self) -> CursorRuntimeStatus {
         self.agent_runtime_status(CURSOR_AGENT_ID)
     }
 
     pub fn install_latest_runtime(&self) -> Result<RuntimeActionResult> {
+        self.install_latest_runtime_with_sink(&NoopSink)
+    }
+
+    fn install_latest_runtime_with_sink(
+        &self,
+        sink: &dyn CommandLineSink,
+    ) -> Result<RuntimeActionResult> {
         let home = user_home_dir()?;
-        self.run_install_command(&home)
+        self.run_install_command_with_sink(&home, sink)
             .context("failed to run official Cursor CLI install command")?;
         let status = self.agent_runtime_status(CURSOR_AGENT_ID);
 
@@ -119,6 +176,10 @@ impl CursorProvider {
     }
 
     pub fn upgrade_runtime(&self) -> Result<RuntimeActionResult> {
+        self.upgrade_runtime_with_sink(&NoopSink)
+    }
+
+    fn upgrade_runtime_with_sink(&self, sink: &dyn CommandLineSink) -> Result<RuntimeActionResult> {
         let status = self.agent_runtime_status(CURSOR_AGENT_ID);
 
         if !status.installed {
@@ -126,7 +187,7 @@ impl CursorProvider {
         }
 
         let home = user_home_dir()?;
-        self.run_agent_command(CURSOR_AGENT_ID, &["update"], &home)
+        self.run_agent_command_with_sink(CURSOR_AGENT_ID, &["update"], &home, sink)
             .context("failed to run `agent update`")?;
         let status = self.agent_runtime_status(CURSOR_AGENT_ID);
 
@@ -140,12 +201,18 @@ impl CursorProvider {
     }
 
     pub fn uninstall_runtime(&self) -> Result<RuntimeActionResult> {
+        self.uninstall_runtime_with_sink(&NoopSink)
+    }
+
+    fn uninstall_runtime_with_sink(&self, sink: &dyn CommandLineSink) -> Result<RuntimeActionResult> {
         let home = user_home_dir()?;
         let install_root = cursor_cli_install_root(&home);
 
         if resolve_cursor_cli_binary(&home).is_err() && !install_root.exists() {
             return Err(anyhow!("当前未检测到已安装的 Cursor CLI，无法执行卸载"));
         }
+
+        sink.on_line(OutputStream::Stdout, "正在移除 Cursor CLI 文件…");
 
         if !cfg!(windows) {
             let bin_dir = home.join(".local").join("bin");
@@ -501,11 +568,27 @@ impl CursorProvider {
         skills_cli::skills_cli_preview(source)
     }
 
+    pub fn skills_cli_preview_with_sink(
+        &self,
+        source: &str,
+        sink: &dyn CommandLineSink,
+    ) -> Result<SkillsCliPreviewResult> {
+        skills_cli::skills_cli_preview_with_sink(source, sink)
+    }
+
     pub fn skills_cli_install(
         &self,
         request: &SkillsCliInstallRequest,
     ) -> Result<SkillsCliInstallResult> {
         skills_cli::skills_cli_install(request)
+    }
+
+    pub fn skills_cli_install_with_sink(
+        &self,
+        request: &SkillsCliInstallRequest,
+        sink: &dyn CommandLineSink,
+    ) -> Result<SkillsCliInstallResult> {
+        skills_cli::skills_cli_install_with_sink(request, sink)
     }
 
     fn agent_summary(&self, definition: &AgentDefinition) -> AgentSummary {
@@ -651,27 +734,84 @@ impl CursorProvider {
     }
 
     fn run_install_command(&self, home: &Path) -> Result<String> {
+        self.run_install_command_with_sink(home, &NoopSink)
+            .map(|_| String::new())
+    }
+
+    fn run_install_command_with_sink(
+        &self,
+        home: &Path,
+        sink: &dyn CommandLineSink,
+    ) -> Result<()> {
         let command = cursor_cli_install_command();
-        if cfg!(windows) {
-            run_command_with_env(
+        let handles = host_proc::ProcHandles::new(sink);
+        let env = self.user_env(home);
+        let capture = if cfg!(windows) {
+            run_command_streaming_with_env(
                 "powershell",
-                &["-NoProfile", "-Command", command],
+                &["-NoProfile", "-Command", &command],
                 home,
-                &self.user_env(home),
+                &env,
+                Some(Duration::from_secs(300)),
+                handles.child(),
+                handles.cancel(),
+                |stream, line| sink.on_line(stream, line),
             )
         } else {
-            run_command_with_env("bash", &["-lc", command], home, &self.user_env(home))
+            run_command_streaming_with_env(
+                "bash",
+                &["-lc", &command],
+                home,
+                &env,
+                Some(Duration::from_secs(300)),
+                handles.child(),
+                handles.cancel(),
+                |stream, line| sink.on_line(stream, line),
+            )
+        }?;
+
+        if capture.success {
+            Ok(())
+        } else {
+            Err(anyhow!("command failed: {}", capture.output))
         }
     }
 
     fn run_agent_command(&self, agent_id: &str, args: &[&str], home: &Path) -> Result<String> {
+        self.run_agent_command_with_sink(agent_id, args, home, &NoopSink)
+            .map(|_| String::new())
+    }
+
+    fn run_agent_command_with_sink(
+        &self,
+        agent_id: &str,
+        args: &[&str],
+        home: &Path,
+        sink: &dyn CommandLineSink,
+    ) -> Result<()> {
         if agent_id != CURSOR_AGENT_ID {
             return Err(anyhow!("暂不支持运行 agent: {agent_id}"));
         }
 
         let binary = resolve_cursor_cli_binary(home)?;
         let program = binary.to_string_lossy().to_string();
-        run_command_with_env(&program, args, home, &self.user_env(home))
+        let handles = host_proc::ProcHandles::new(sink);
+        let capture = run_command_streaming_with_env(
+            &program,
+            args,
+            home,
+            &self.user_env(home),
+            Some(Duration::from_secs(120)),
+            handles.child(),
+            handles.cancel(),
+            |stream, line| sink.on_line(stream, line),
+        )?;
+
+        if capture.success {
+            Ok(())
+        } else {
+            Err(anyhow!("command failed: {}", capture.output))
+        }
     }
 
     fn spawn_login_process(&self, home: &Path) -> Result<()> {
@@ -942,4 +1082,10 @@ fn extract_auth_url(text: &str) -> Option<String> {
         .ok()?
         .find(text)
         .map(|value| value.as_str().to_string())
+}
+
+struct NoopSink;
+
+impl CommandLineSink for NoopSink {
+    fn on_line(&self, _stream: OutputStream, _line: &str) {}
 }

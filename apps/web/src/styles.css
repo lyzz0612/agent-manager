@@ -974,6 +974,55 @@ textarea {
   line-height: 1.45;
 }
 
+.command-job-panel {
+  position: sticky;
+  bottom: 0;
+  margin-top: 20px;
+  border: 1px solid rgba(148, 163, 184, 0.22);
+  border-radius: 12px;
+  background: rgba(15, 23, 42, 0.92);
+  backdrop-filter: blur(8px);
+  overflow: hidden;
+}
+
+.command-job-panel__header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 14px;
+  border-bottom: 1px solid rgba(148, 163, 184, 0.16);
+}
+
+.command-job-panel__title {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+  color: #e2e8f0;
+}
+
+.command-job-panel__meta {
+  margin: 4px 0 0;
+  font-size: 12px;
+}
+
+.command-job-panel__actions {
+  flex-shrink: 0;
+}
+
+.command-job-panel__log {
+  margin: 0;
+  max-height: 220px;
+  overflow: auto;
+  padding: 12px 14px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.5;
+  color: #cbd5e1;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
 @media (max-width: 720px) {
   .app-shell {
     flex-direction: column;

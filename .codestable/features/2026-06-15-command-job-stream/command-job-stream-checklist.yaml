@@ -1,0 +1,76 @@
+feature: 2026-06-15-command-job-stream
+created: 2026-06-15
+
+steps:
+  - action: "编排骨架：新增 host-jobs crate、host-proc 流式执行 stub、/api/jobs/* 路由 stub、CommandJobPanel + Provider 壳"
+    exit_signal: "cargo build 与 web build 通过；POST 某 mutation 可返回 stub job_id；面板可见占位"
+    status: done
+
+  - action: "计算节点（后端核心）：JobRegistry 单槽 try_start、SSE stream、buffer 回放、cancel、超时、JobGuard RAII、移除 INSTALL_LOCK"
+    exit_signal: "集成测试或手工：假命令流式输出经 SSE 可见；409/cancel/超时/结束后槽位可复用"
+    status: done
+
+  - action: "计算节点（后端接入）：Skills preview/install、Agent/Plugin install|upgrade|uninstall、Paseo daemon 改走 job"
+    exit_signal: "各领域 POST 返回 job_id；worker 执行原 CLI 逻辑；done.result 含原业务字段"
+    status: done
+
+  - action: "计算节点（前端）：useCommandJob、各页接入、409 提示、done 后 refresh/toast"
+    exit_signal: "Skills/Agents/Plugins 长操作均走共用面板；无同步阻塞 spinner-only 路径"
+    status: done
+
+  - action: "联调验收：覆盖 design 第 3 节场景；确认 Settings update 轮询未回归"
+    exit_signal: "场景 1–12 有可观察证据或合理 skip 说明"
+    status: done
+
+checks:
+  - item: "CommandJobStartResponse 含 job_id/kind/label；槽位占用时 409 含 active_job_id"
+    source: 名词契约
+    status: passed
+
+  - item: "GET /api/jobs/current 与 GET /api/jobs/:id 返回 active/phase/message 快照"
+    source: 名词契约
+    status: passed
+
+  - item: "GET /api/jobs/:id/stream 推送 phase/line/done/error 结构化 SSE 事件；line 已剥离 ANSI"
+    source: 名词契约
+    status: passed
+
+  - item: "POST /api/jobs/:id/cancel 可终止运行中任务并释放槽位"
+    source: 名词契约
+    status: passed
+
+  - item: "长 mutation 路径：启动后立即返回 job_id，worker 流式执行 CLI，结束发 done"
+    source: 编排骨架
+    status: passed
+
+  - item: "全局单槽：try_start 为唯一互斥闸口；skills_cli 无 INSTALL_LOCK"
+    source: 流程级约束
+    status: passed
+
+  - item: "worker 使用 unbounded channel；JobGuard drop 必释放槽位（含 panic/超时路径）"
+    source: 流程级约束
+    status: passed
+
+  - item: "Cargo workspace 含 host-jobs；/api/jobs/* 四条路由已注册且需登录"
+    source: 挂载点
+    status: passed
+
+  - item: "App.tsx 挂载 CommandJobProvider 与全局 CommandJobPanel"
+    source: 挂载点
+    status: passed
+
+  - item: "无 /api/terminal、无 job 列表 API、无 stdin 交互"
+    source: 范围守护
+    status: passed
+
+  - item: "cursor/gh login 与账号 status 路由未改为 job 模式"
+    source: 范围守护
+    status: passed
+
+  - item: "update.rs 未接入 JobRegistry；GET /api/app/update/status 仍可用"
+    source: 范围守护
+    status: passed
+
+  - item: "场景：流式安装、409 冲突、cancel、断线重连、失败日志、update 未回归"
+    source: 验收场景
+    status: passed

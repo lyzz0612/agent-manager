@@ -4,6 +4,7 @@ members = [
   "crates/app-core",
   "crates/cursor-provider",
   "crates/host-fs",
+  "crates/host-jobs",
   "crates/host-model",
   "crates/host-proc",
   "crates/paseo-provider",

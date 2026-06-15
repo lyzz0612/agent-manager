@@ -7,7 +7,10 @@ use host_model::{
     ActionMessage, AuthStep, GhAccountStatus, GhAuthFlowStatus, GhLoginSessionStatus,
     GhLoginStartResult, PluginDetail, PluginSummary, RuntimeActionResult,
 };
-use host_proc::{run_command_capture_with_env_timeout, run_command_with_env};
+use host_proc::{
+    run_command_capture_with_env_timeout, run_command_streaming_with_env, run_command_with_env,
+    CommandLineSink, OutputStream,
+};
 use regex::Regex;
 use serde_json::Value;
 use std::collections::BTreeMap;
@@ -80,11 +83,45 @@ impl GhProvider {
         self.install_gh(false)
     }
 
+    pub fn install_plugin_with_sink(
+        &self,
+        plugin_id: &str,
+        sink: &dyn CommandLineSink,
+    ) -> Result<RuntimeActionResult> {
+        if plugin_id != GH_PLUGIN_ID {
+            return Err(anyhow!("暂不支持安装插件: {plugin_id}"));
+        }
+        self.install_gh_with_sink(false, sink)
+    }
+
     pub fn upgrade_plugin(&self, plugin_id: &str) -> Result<RuntimeActionResult> {
         if plugin_id != GH_PLUGIN_ID {
             return Err(anyhow!("暂不支持升级插件: {plugin_id}"));
         }
         self.install_gh(true)
+    }
+
+    pub fn upgrade_plugin_with_sink(
+        &self,
+        plugin_id: &str,
+        sink: &dyn CommandLineSink,
+    ) -> Result<RuntimeActionResult> {
+        if plugin_id != GH_PLUGIN_ID {
+            return Err(anyhow!("暂不支持升级插件: {plugin_id}"));
+        }
+        self.install_gh_with_sink(true, sink)
+    }
+
+    pub fn uninstall_plugin_with_sink(
+        &self,
+        plugin_id: &str,
+        sink: &dyn CommandLineSink,
+    ) -> Result<RuntimeActionResult> {
+        if plugin_id != GH_PLUGIN_ID {
+            return Err(anyhow!("暂不支持卸载插件: {plugin_id}"));
+        }
+        sink.on_line(OutputStream::Stdout, "正在卸载 GitHub CLI…");
+        self.uninstall_plugin(plugin_id)
     }
 
     pub fn uninstall_plugin(&self, plugin_id: &str) -> Result<RuntimeActionResult> {
@@ -352,6 +389,14 @@ impl GhProvider {
     }
 
     fn install_gh(&self, upgrade: bool) -> Result<RuntimeActionResult> {
+        self.install_gh_with_sink(upgrade, &NoopSink)
+    }
+
+    fn install_gh_with_sink(
+        &self,
+        upgrade: bool,
+        sink: &dyn CommandLineSink,
+    ) -> Result<RuntimeActionResult> {
         let started = Instant::now();
         let home = user_home_dir()?;
         let env = self.user_env(&home);
@@ -360,18 +405,38 @@ impl GhProvider {
             return Err(anyhow!("当前未检测到已安装的 GitHub CLI，无法执行升级"));
         }
 
+        sink.on_line(
+            OutputStream::Stdout,
+            if upgrade {
+                "正在获取 GitHub CLI 最新 release…"
+            } else {
+                "正在下载 GitHub CLI…"
+            },
+        );
+
         let (version, asset_url) = fetch_latest_release_asset()?;
         let staging = home.join(".local").join("tmp");
         fs::create_dir_all(&staging)?;
         let archive_path = staging.join(asset_file_name(&version));
 
-        run_command_with_env(
+        let handles = host_proc::ProcHandles::new(sink);
+        let capture = run_command_streaming_with_env(
             "curl",
             &["-fsSL", "-o", archive_path.to_string_lossy().as_ref(), &asset_url],
             &home,
             &env,
+            Some(Duration::from_secs(300)),
+            handles.child(),
+            handles.cancel(),
+            |stream, line| sink.on_line(stream, line),
         )
         .with_context(|| format!("failed to download gh release from {asset_url}"))?;
+
+        if !capture.success {
+            return Err(anyhow!("下载 GitHub CLI 失败: {}", capture.output));
+        }
+
+        sink.on_line(OutputStream::Stdout, "正在解压 GitHub CLI…");
 
         let install_version_dir = gh_cli_install_root(&home).join(&version);
         fs::create_dir_all(&install_version_dir)?;
@@ -773,4 +838,10 @@ fn extract_auth_url(text: &str) -> Option<String> {
         .ok()?
         .find(text)
         .map(|value| value.as_str().to_string())
+}
+
+struct NoopSink;
+
+impl CommandLineSink for NoopSink {
+    fn on_line(&self, _stream: OutputStream, _line: &str) {}
 }

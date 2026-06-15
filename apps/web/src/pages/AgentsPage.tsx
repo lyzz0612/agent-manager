@@ -1,7 +1,9 @@
 import { useEffect, useMemo, useState } from "react";
 import { isAbortError, requestJson } from "../api";
+import { CommandJobConflictError } from "../commandJobApi";
 import { AgentDetailView } from "../components/AgentDetailView";
 import { PageLoading, Panel } from "../components/ui";
+import { useCommandJob } from "../context/CommandJobContext";
 import { AppRoute, buildAgentPath } from "../routing";
 import type { AgentSummary, RuntimeActionResult } from "../types";
 import { resolveInstallCommand } from "../utils";
@@ -17,6 +19,7 @@ type AgentsPageProps = {
 export function AgentsPage({ route, refreshKey, navigate, onNotify, onError }: AgentsPageProps) {
   const [agents, setAgents] = useState<AgentSummary[]>([]);
   const [loading, setLoading] = useState(true);
+  const { runJob, job } = useCommandJob();
 
   const agentId = route.agentId;
   const tab = route.tab ?? "overview";
@@ -71,39 +74,44 @@ export function AgentsPage({ route, refreshKey, navigate, onNotify, onError }: A
     }
 
     try {
-      const result = await requestJson<RuntimeActionResult>(
-        `/api/agents/${encodeURIComponent(targetAgentId)}/${action}`,
-        { method: "POST" },
-      );
-
-      if (action === "uninstall" && !result.installed) {
-        navigate("/agents");
-        onNotify("success", result.message);
-        return;
-      }
-
-      if (action === "install" && result.installed) {
-        navigate(buildAgentPath(targetAgentId));
-      }
-
-      setAgents((current) =>
-        current.map((agent) =>
-          agent.id === targetAgentId
-            ? {
-                ...agent,
-                installed: result.installed,
-                version: result.version,
-                install_dir: result.install_dir,
-                data_dir: result.data_dir,
-              }
-            : agent,
-        ),
-      );
-      onNotify("success", result.message);
+      await runJob(`/api/agents/${encodeURIComponent(targetAgentId)}/${action}`, {
+        method: "POST",
+      }, {
+        onDone: (success, result) => {
+          if (!success || !result) {
+            return;
+          }
+          const runtime = result as RuntimeActionResult;
+          if (action === "uninstall" && !runtime.installed) {
+            navigate("/agents");
+            return;
+          }
+          if (action === "install" && runtime.installed) {
+            navigate(buildAgentPath(targetAgentId));
+          }
+          setAgents((current) =>
+            current.map((agent) =>
+              agent.id === targetAgentId
+                ? {
+                    ...agent,
+                    installed: runtime.installed,
+                    version: runtime.version,
+                    install_dir: runtime.install_dir,
+                    data_dir: runtime.data_dir,
+                  }
+                : agent,
+            ),
+          );
+        },
+      });
     } catch (error) {
-      onError(error instanceof Error ? error.message : "操作失败");
+      if (!(error instanceof CommandJobConflictError)) {
+        onError(error instanceof Error ? error.message : "操作失败");
+      }
     }
   }
+
+  const actionBusy = job.active;
 
   if (loading) {
     return <PageLoading label="正在加载 Agents..." />;
@@ -182,7 +190,7 @@ export function AgentsPage({ route, refreshKey, navigate, onNotify, onError }: A
                 <>
                   <button
                     className="secondary"
-                    disabled={!agent.install_supported}
+                    disabled={!agent.install_supported || actionBusy}
                     onClick={(event) => {
                       event.stopPropagation();
                       void handleAgentAction(agent.id, "upgrade", agent.name);
@@ -193,7 +201,7 @@ export function AgentsPage({ route, refreshKey, navigate, onNotify, onError }: A
                   </button>
                   <button
                     className="danger"
-                    disabled={!agent.install_supported}
+                    disabled={!agent.install_supported || actionBusy}
                     onClick={(event) => {
                       event.stopPropagation();
                       void handleAgentAction(agent.id, "uninstall", agent.name);
@@ -206,7 +214,7 @@ export function AgentsPage({ route, refreshKey, navigate, onNotify, onError }: A
               ) : (
                 <button
                   className="primary"
-                  disabled={!agent.install_supported}
+                  disabled={!agent.install_supported || actionBusy}
                   onClick={(event) => {
                     event.stopPropagation();
                     void handleAgentAction(agent.id, "install", agent.name);
