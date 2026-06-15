@@ -240,18 +240,71 @@ fn read_command_version(
 
 fn summarize_cli_output(output: &str) -> String {
     let stripped = strip_ansi(output);
-    let line = stripped
+    let lines: Vec<&str> = stripped
         .lines()
         .map(str::trim)
-        .find(|line| !line.is_empty())
-        .unwrap_or("命令执行失败");
-    line.chars().take(240).collect()
+        .filter(|line| !line.is_empty())
+        .collect();
+
+    for line in &lines {
+        let lower = line.to_ascii_lowercase();
+        if lower.contains("error")
+            || lower.contains("failed")
+            || lower.contains("fatal")
+            || lower.contains("enoent")
+        {
+            return line.chars().take(240).collect();
+        }
+    }
+
+    for line in lines.iter().rev() {
+        if is_meaningful_cli_line(line) {
+            return line.chars().take(240).collect();
+        }
+    }
+
+    lines
+        .first()
+        .map(|line| line.chars().take(240).collect())
+        .unwrap_or_else(|| "命令执行失败".to_string())
+}
+
+fn is_meaningful_cli_line(line: &str) -> bool {
+    if line.contains("Available Skills") {
+        return false;
+    }
+    if line.contains("Found ") && line.contains("skills") {
+        return false;
+    }
+    if line.contains("Cloning repository") || line.contains("Repository cloned") {
+        return false;
+    }
+
+    let alphanumeric = line.chars().filter(|c| c.is_alphanumeric()).count();
+    if alphanumeric < 8 {
+        return false;
+    }
+
+    !line
+        .chars()
+        .all(|c| matches!(c, '|' | '│' | '◇' | '○' | '●' | '◆' | '•' | '·' | '—' | '-' | ' '))
 }
 
 fn strip_ansi(text: &str) -> String {
     static ANSI_RE: OnceLock<Regex> = OnceLock::new();
-    let re = ANSI_RE.get_or_init(|| Regex::new(r"\x1b\[[0-9;]*[a-zA-Z]").expect("ansi regex"));
+    let re = ANSI_RE.get_or_init(|| {
+        Regex::new(r"\x1b\[[?\d;]*[a-zA-Z]").expect("ansi regex")
+    });
     re.replace_all(text, "").into_owned()
+}
+
+fn normalize_table_line(line: &str) -> String {
+    line.chars()
+        .map(|c| match c {
+            '\u{2502}' | '\u{2503}' | '\u{2551}' => '|',
+            _ => c,
+        })
+        .collect()
 }
 
 fn parse_preview_skills(output: &str) -> Vec<SkillsCliPreviewSkill> {
@@ -308,19 +361,23 @@ fn parse_preview_skills(output: &str) -> Vec<SkillsCliPreviewSkill> {
 }
 
 fn parse_skill_name_line(line: &str) -> Option<String> {
+    let line = normalize_table_line(line);
     static NAME_RE: OnceLock<Regex> = OnceLock::new();
     let re = NAME_RE.get_or_init(|| {
-        Regex::new(r"^\|\s{4}([a-zA-Z0-9][\w-]*)\s*$").expect("skill name regex")
+        Regex::new(r"^\|+\s{3,5}([a-zA-Z0-9][\w-]*)\s*$").expect("skill name regex")
     });
-    re.captures(line)
+    re.captures(&line)
         .and_then(|caps| caps.get(1))
         .map(|value| value.as_str().to_string())
 }
 
 fn parse_skill_description_line(line: &str) -> Option<String> {
+    let line = normalize_table_line(line);
     static DESC_RE: OnceLock<Regex> = OnceLock::new();
-    let re = DESC_RE.get_or_init(|| Regex::new(r"^\|\s{6}(.+?)\s*$").expect("skill desc regex"));
-    re.captures(line)
+    let re = DESC_RE.get_or_init(|| {
+        Regex::new(r"^\|+\s{5,}(.+?)\s*$").expect("skill desc regex")
+    });
+    re.captures(&line)
         .and_then(|caps| caps.get(1))
         .map(|value| value.as_str().trim().to_string())
         .filter(|value| !value.is_empty())
@@ -351,5 +408,34 @@ o  Available Skills
         assert_eq!(skills[0].name, "web-design-guidelines");
         assert!(skills[0].description.contains("Review UI code"));
         assert_eq!(skills[1].name, "writing-guidelines");
+    }
+
+    #[test]
+    fn parse_preview_skills_handles_ci_style_box_drawing_output() {
+        let sample = r#"
+o  Found 26 skills
+│◆ Available Skills
+││   browser-bridge
+││     通过 Chrome 扩展控制真实浏览器。
+││   cs-issue
+││     修 bug 的子流程入口。
+
+—  Use --skill <name> to install specific skills
+"#;
+
+        let skills = parse_preview_skills(sample);
+        assert_eq!(skills.len(), 2);
+        assert_eq!(skills[0].name, "browser-bridge");
+        assert!(skills[0].description.contains("Chrome"));
+        assert_eq!(skills[1].name, "cs-issue");
+    }
+
+    #[test]
+    fn summarize_cli_output_skips_spinner_lines() {
+        let sample = "\x1b[?25l│◆ Source: https://example.com\n\x1b[?25herror: repository not found";
+        assert_eq!(
+            summarize_cli_output(sample),
+            "error: repository not found"
+        );
     }
 }
