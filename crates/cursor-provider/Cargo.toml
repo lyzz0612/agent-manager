@@ -12,3 +12,4 @@ host-model = { path = "../host-model" }
 host-proc = { path = "../host-proc" }
 regex.workspace = true
 serde_json.workspace = true
+tracing.workspace = true

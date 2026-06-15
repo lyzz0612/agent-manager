@@ -14,7 +14,8 @@ use host_model::{
     CursorLoginStartResult, CursorRuntimeStatus,
     KnownConfig, OverviewData, PluginDetail, PluginSummary, RawConfigDocument, RawConfigPreview,
     RawConfigUpdateRequest, RuntimeActionResult, SessionStatus, SkillDocument, SkillFileSummary,
-    SkillSummary, SkillUpdateRequest,
+    SkillSummary, SkillUpdateRequest, SkillsCliCapability, SkillsCliInstallRequest,
+    SkillsCliInstallResult, SkillsCliPreviewResult, SkillsCliSourceRequest,
 };
 use serde_json::json;
 use std::sync::Arc;
@@ -113,6 +114,9 @@ async fn main() -> anyhow::Result<()> {
         .route("/profile/raw-config/preview", post(preview_raw_config))
         .route("/profile/raw-config/confirm", post(confirm_raw_config))
         .route("/profile/skills", get(list_skills))
+        .route("/profile/skills/cli/status", get(skills_cli_status))
+        .route("/profile/skills/cli/preview", post(skills_cli_preview))
+        .route("/profile/skills/cli/install", post(skills_cli_install))
         .route("/profile/skills/:folder_id/files", get(list_skill_files))
         .route(
             "/profile/skills/:id",
@@ -490,6 +494,61 @@ async fn update_skill(
 ) -> Result<Json<SkillDocument>, ApiError> {
     ensure_authenticated(&state, &headers)?;
     Ok(Json(state.update_skill(&id, &payload.content)?))
+}
+
+async fn skills_cli_status(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Result<Json<SkillsCliCapability>, ApiError> {
+    ensure_authenticated(&state, &headers)?;
+    Ok(Json(state.skills_cli_status()))
+}
+
+async fn skills_cli_preview(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(payload): Json<SkillsCliSourceRequest>,
+) -> Result<Json<SkillsCliPreviewResult>, ApiError> {
+    ensure_authenticated(&state, &headers)?;
+    match state.skills_cli_preview(&payload.source) {
+        Ok(result) => Ok(Json(result)),
+        Err(error) => Err(map_skills_cli_error(error)),
+    }
+}
+
+async fn skills_cli_install(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(payload): Json<SkillsCliInstallRequest>,
+) -> Result<Json<SkillsCliInstallResult>, ApiError> {
+    ensure_authenticated(&state, &headers)?;
+    if !state.skills_cli_status().ready {
+        return Err(ApiError::new(
+            StatusCode::SERVICE_UNAVAILABLE,
+            state.skills_cli_status().message,
+        ));
+    }
+    match state.skills_cli_install(&payload) {
+        Ok(result) => Ok(Json(result)),
+        Err(error) => Err(map_skills_cli_error(error)),
+    }
+}
+
+fn map_skills_cli_error(error: anyhow::Error) -> ApiError {
+    let message = error.to_string();
+    let status = if message.contains("请提供有效的仓库或链接")
+        || message.contains("请至少选择")
+        || message.contains("未知或未支持的 agent")
+    {
+        StatusCode::BAD_REQUEST
+    } else if message.contains("Skills CLI 不可用") {
+        StatusCode::SERVICE_UNAVAILABLE
+    } else if message.contains("无法获取 skill 列表") || message.contains("安装失败") {
+        StatusCode::BAD_GATEWAY
+    } else {
+        StatusCode::INTERNAL_SERVER_ERROR
+    };
+    ApiError::new(status, message)
 }
 
 fn ensure_authenticated(state: &AppState, headers: &HeaderMap) -> Result<(), ApiError> {

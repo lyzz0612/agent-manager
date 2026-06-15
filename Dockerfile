@@ -23,6 +23,11 @@ RUN apt-get update \
   && apt-get install -y --no-install-recommends ca-certificates curl bash git \
   && rm -rf /var/lib/apt/lists/*
 
+COPY --from=web-builder /usr/local/bin/node /usr/local/bin/node
+COPY --from=web-builder /usr/local/bin/npm /usr/local/bin/npm
+COPY --from=web-builder /usr/local/bin/npx /usr/local/bin/npx
+COPY --from=web-builder /usr/local/lib/node_modules /usr/local/lib/node_modules
+
 ENV APP_ENV=production
 ENV PORT=3000
 ENV MANAGED_BASE_DIR=/app/state

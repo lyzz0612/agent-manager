@@ -182,6 +182,7 @@ export default function App() {
             navigate={navigate}
             onError={reportError}
             onNotify={notify}
+            onRefresh={refresh}
           />
         );
       case "settings":

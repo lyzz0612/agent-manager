@@ -20,6 +20,22 @@ pub const SUPPORTED_AGENTS: &[AgentDefinition] = &[AgentDefinition {
     install_supported: true,
 }];
 
+/// agent-manager skill scope → `npx skills --agent` 值（见 vercel-labs/skills Supported Agents 表）。
+pub fn skills_cli_agent_name(agent_manager_id: &str) -> Option<&'static str> {
+    match agent_manager_id {
+        COMMON_SKILL_AGENT => Some("zed"),
+        "cursor" => Some("cursor"),
+        _ => None,
+    }
+}
+
+/// Skills 安装向导可勾选的 agent scope：`common` + 已注册 agent。
+pub fn installable_skill_agent_ids() -> Vec<&'static str> {
+    let mut ids = vec![COMMON_SKILL_AGENT];
+    ids.extend(SUPPORTED_AGENTS.iter().map(|definition| definition.id));
+    ids
+}
+
 #[derive(Debug, Clone, Copy)]
 pub struct PluginDefinition {
     pub id: &'static str,

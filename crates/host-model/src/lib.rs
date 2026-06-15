@@ -169,6 +169,45 @@ pub struct SkillUpdateRequest {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SkillsCliCapability {
+    pub ready: bool,
+    pub node_version: Option<String>,
+    pub skills_cli_version: Option<String>,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SkillsCliSourceRequest {
+    pub source: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SkillsCliPreviewSkill {
+    pub name: String,
+    pub description: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SkillsCliPreviewResult {
+    pub source: String,
+    pub skills: Vec<SkillsCliPreviewSkill>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SkillsCliInstallRequest {
+    pub source: String,
+    pub skills: Vec<String>,
+    pub agents: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SkillsCliInstallResult {
+    pub message: String,
+    pub installed_skills: Vec<String>,
+    pub agents: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RuntimeActionResult {
     pub installed: bool,
     pub version: Option<String>,

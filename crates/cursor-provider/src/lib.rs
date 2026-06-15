@@ -10,8 +10,11 @@ use host_model::{
     ActionMessage, AgentSummary, AuthStep, CursorAccountStatus, CursorAuthFlowStatus,
     CursorLoginSessionStatus, CursorLoginStartResult, CursorRuntimeStatus, KnownConfig,
     RawConfigDocument, RawConfigPreview, RuntimeActionResult, SkillDocument, SkillFileSummary,
-    SkillSummary,
+    SkillSummary, SkillsCliCapability, SkillsCliInstallRequest, SkillsCliInstallResult,
+    SkillsCliPreviewResult,
 };
+
+mod skills_cli;
 use host_proc::run_command_with_env;
 use regex::Regex;
 use serde_json::{json, Map, Value};
@@ -488,6 +491,21 @@ impl CursorProvider {
             .with_context(|| format!("failed to update skill: {}", path.display()))?;
 
         self.read_skill(id)
+    }
+
+    pub fn skills_cli_status(&self) -> SkillsCliCapability {
+        skills_cli::skills_cli_status()
+    }
+
+    pub fn skills_cli_preview(&self, source: &str) -> Result<SkillsCliPreviewResult> {
+        skills_cli::skills_cli_preview(source)
+    }
+
+    pub fn skills_cli_install(
+        &self,
+        request: &SkillsCliInstallRequest,
+    ) -> Result<SkillsCliInstallResult> {
+        skills_cli::skills_cli_install(request)
     }
 
     fn agent_summary(&self, definition: &AgentDefinition) -> AgentSummary {

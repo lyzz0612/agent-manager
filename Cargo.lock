@@ -166,6 +166,7 @@ dependencies = [
  "host-proc",
  "regex",
  "serde_json",
+ "tracing",
 ]
 
 [[package]]

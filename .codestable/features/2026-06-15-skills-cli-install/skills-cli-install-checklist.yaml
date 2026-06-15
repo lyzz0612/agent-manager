@@ -1,0 +1,76 @@
+feature: 2026-06-15-skills-cli-install
+created: 2026-06-15
+
+steps:
+  - action: "编排骨架：SkillsCliCapability 类型 + GET status / POST preview / POST install 路由 stub；Skills 页安装按钮与弹窗壳"
+    exit_signal: "cargo build 与前端 build 通过；GET status 返回 JSON；UI 可见安装入口"
+    status: done
+
+  - action: "计算节点（后端）：capability 检测、preview stdout 解析、install CLI 编排 + SkillsAgentMap；Dockerfile runtime 加 Node 22"
+    exit_signal: "dev 下 status.ready=true；preview vercel-labs/agent-skills 返回多条；install 后 skill 目录有新文件夹"
+    status: done
+
+  - action: "计算节点（前端）：source 输入、preview 加载态、skill 多选、agent 勾选、install 提交与错误展示"
+    exit_signal: "完整走通输入 → 预览 → 勾选 → 安装 → Skills 列表刷新"
+    status: done
+
+  - action: "联调验收：dev 或 compose 新镜像覆盖 design 第 3 节关键场景"
+    exit_signal: "场景 1–10 均有可观察证据或合理 skip 说明（如无 Node 环境测场景 2）"
+    status: done
+
+checks:
+  - item: "GET /api/profile/skills/cli/status 返回 ready/node_version/skills_cli_version/message；不可用仍 200"
+    source: 名词契约
+    status: pending
+
+  - item: "POST preview 接受 source 返回 skills[]；空 source 400；CLI 失败 502"
+    source: 名词契约
+    status: pending
+
+  - item: "POST install 接受 source/skills/agents；未选或未知 agent 400；ready=false 时 503"
+    source: 名词契约
+    status: pending
+
+  - item: "SkillsAgentMap：common→zed、cursor→cursor；未映射 agent 不可安装"
+    source: 名词契约
+    status: pending
+
+  - item: "安装命令使用 npx skills add -g -y --copy 与映射后的 --agent/--skill"
+    source: 编排骨架
+    status: pending
+
+  - item: "preview 仅 list（-l），不写入 skill 目录"
+    source: 编排骨架
+    status: pending
+
+  - item: "install 请求串行化，避免并发写同一 skill 目录"
+    source: 流程级约束
+    status: pending
+
+  - item: "/profile/skills/cli/* 三条路由已注册且需登录"
+    source: 挂载点
+    status: pending
+
+  - item: "SkillsPage 已挂载安装入口与弹窗流程"
+    source: 挂载点
+    status: pending
+
+  - item: "Dockerfile runtime stage 含 Node.js"
+    source: 挂载点
+    status: pending
+
+  - item: "无 /cli/find 路由或 npx skills find 调用"
+    source: 范围守护
+    status: pending
+
+  - item: "v1 无 update/remove/list CLI 可视化 UI"
+    source: 范围守护
+    status: pending
+
+  - item: "GET/PUT /api/profile/skills 读写语义未改；Skills 列表不进 RuntimeCache"
+    source: 范围守护
+    status: pending
+
+  - item: "场景：status 就绪、preview 多 skill、单 skill 安装、双 agent 目录、错误路径"
+    source: 验收场景
+    status: pending

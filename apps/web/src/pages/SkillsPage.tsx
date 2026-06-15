@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { isAbortError, requestJson } from "../api";
+import { SkillsInstallDialog } from "../components/SkillsInstallDialog";
 import { PageLoading, Panel } from "../components/ui";
 import { AppRoute, buildSkillsPath } from "../routing";
 import type {
@@ -7,6 +8,7 @@ import type {
   SkillDocument,
   SkillFileSummary,
   SkillSummary,
+  SkillsCliCapability,
 } from "../types";
 
 type SkillsPageProps = {
@@ -15,9 +17,17 @@ type SkillsPageProps = {
   navigate: (path: string) => void;
   onNotify: (kind: "info" | "success" | "error", text: string) => void;
   onError: (message: string) => void;
+  onRefresh: () => void;
 };
 
-export function SkillsPage({ route, refreshKey, navigate, onNotify, onError }: SkillsPageProps) {
+export function SkillsPage({
+  route,
+  refreshKey,
+  navigate,
+  onNotify,
+  onError,
+  onRefresh,
+}: SkillsPageProps) {
   const { scope, folderId, fileId } = route;
   const [agents, setAgents] = useState<AgentSummary[]>([]);
   const [skills, setSkills] = useState<SkillSummary[]>([]);
@@ -25,6 +35,8 @@ export function SkillsPage({ route, refreshKey, navigate, onNotify, onError }: S
   const [selectedSkill, setSelectedSkill] = useState<SkillDocument | null>(null);
   const [skillDraft, setSkillDraft] = useState("");
   const [loading, setLoading] = useState(true);
+  const [installOpen, setInstallOpen] = useState(false);
+  const [cliCapability, setCliCapability] = useState<SkillsCliCapability | null>(null);
 
   const scopeTabs = useMemo(
     () => [
@@ -103,6 +115,16 @@ export function SkillsPage({ route, refreshKey, navigate, onNotify, onError }: S
     };
   }, [fileId, folderId, refreshKey, onError]);
 
+  useEffect(() => {
+    if (folderId || fileId) {
+      return;
+    }
+
+    void requestJson<SkillsCliCapability>("/api/profile/skills/cli/status")
+      .then(setCliCapability)
+      .catch(() => setCliCapability(null));
+  }, [fileId, folderId, refreshKey]);
+
   async function saveSkill() {
     if (!selectedSkill) {
       return;
@@ -130,6 +152,32 @@ export function SkillsPage({ route, refreshKey, navigate, onNotify, onError }: S
 
   return (
     <Panel title="Skills">
+      {!folderId && !fileId ? (
+        <div className="skills-toolbar">
+          <button
+            className="primary"
+            disabled={cliCapability !== null && !cliCapability.ready}
+            onClick={() => setInstallOpen(true)}
+            title={cliCapability && !cliCapability.ready ? cliCapability.message : undefined}
+            type="button"
+          >
+            安装 Skill
+          </button>
+          {cliCapability && !cliCapability.ready ? (
+            <p className="skills-toolbar__hint">{cliCapability.message}</p>
+          ) : null}
+        </div>
+      ) : null}
+
+      <SkillsInstallDialog
+        agents={agents}
+        open={installOpen}
+        onClose={() => setInstallOpen(false)}
+        onError={onError}
+        onInstalled={onRefresh}
+        onNotify={onNotify}
+      />
+
       <div className="skills-layout">
         <nav className="scope-tabs" role="tablist">
           {scopeTabs.map((tab) => (

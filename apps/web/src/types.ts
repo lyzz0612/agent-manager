@@ -142,6 +142,29 @@ export type SkillDocument = {
   content: string;
 };
 
+export type SkillsCliCapability = {
+  ready: boolean;
+  node_version: string | null;
+  skills_cli_version: string | null;
+  message: string;
+};
+
+export type SkillsCliPreviewSkill = {
+  name: string;
+  description: string;
+};
+
+export type SkillsCliPreviewResult = {
+  source: string;
+  skills: SkillsCliPreviewSkill[];
+};
+
+export type SkillsCliInstallResult = {
+  message: string;
+  installed_skills: string[];
+  agents: string[];
+};
+
 export type MessageKind = "info" | "success" | "error";
 
 export type AppSettings = {

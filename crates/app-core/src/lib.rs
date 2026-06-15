@@ -8,7 +8,8 @@ use host_model::{
     CacheRefreshRequest, CursorAccountStatus, CursorAuthFlowStatus, CursorLoginSessionStatus,
     CursorLoginStartResult, CursorRuntimeStatus, KnownConfig, OverviewAgentItem, OverviewData,
     OverviewPluginItem, PluginDetail, PluginSummary, RawConfigDocument, RawConfigPreview,
-    RuntimeActionResult, SkillDocument, SkillFileSummary, SkillSummary,
+    RuntimeActionResult, SkillDocument, SkillFileSummary, SkillSummary, SkillsCliCapability,
+    SkillsCliInstallRequest, SkillsCliInstallResult, SkillsCliPreviewResult,
 };
 use paseo_provider::PaseoProvider;
 use runtime_cache::{RefreshScope, RefreshTiming, RuntimeCache};
@@ -455,6 +456,21 @@ impl AppState {
 
     pub fn update_skill(&self, id: &str, content: &str) -> Result<SkillDocument> {
         self.provider().update_skill(id, content)
+    }
+
+    pub fn skills_cli_status(&self) -> SkillsCliCapability {
+        self.provider().skills_cli_status()
+    }
+
+    pub fn skills_cli_preview(&self, source: &str) -> Result<SkillsCliPreviewResult> {
+        self.provider().skills_cli_preview(source)
+    }
+
+    pub fn skills_cli_install(
+        &self,
+        request: &SkillsCliInstallRequest,
+    ) -> Result<SkillsCliInstallResult> {
+        self.provider().skills_cli_install(request)
     }
 
     fn refresh_overview_bundle(&self) -> Result<OverviewData> {
