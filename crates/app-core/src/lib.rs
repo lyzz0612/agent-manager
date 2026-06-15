@@ -111,6 +111,7 @@ pub struct AppState {
 
 impl AppState {
     pub fn new(config: AppConfig) -> Result<Self> {
+        update::recover_stale_update_job_on_startup(&config);
         Ok(Self {
             config,
             sessions: Arc::new(RwLock::new(HashSet::new())),

@@ -26,6 +26,8 @@ struct UpdateJobState {
     output: String,
     version: String,
     git_commit: Option<String>,
+    #[serde(default)]
+    worker_pid: Option<u32>,
 }
 
 struct InnerUpdateResult {
@@ -86,12 +88,50 @@ pub fn check_for_updates(config: &AppConfig) -> Result<AppSettings> {
     })
 }
 
-pub fn update_job_status(config: &AppConfig) -> AppUpdateStatus {
+pub fn recover_stale_update_job_on_startup(config: &AppConfig) {
     let Some(state) = read_job_state(config) else {
+        return;
+    };
+
+    if !matches!(state.phase.as_str(), "running" | "restarting") {
+        return;
+    }
+
+    if state.worker_pid.map(process_alive).unwrap_or(false) {
+        return;
+    }
+
+    let (phase, message) = if state.phase == "restarting" {
+        (
+            "success",
+            "更新已完成（上次重启后任务状态已自动恢复）。",
+        )
+    } else {
+        (
+            "failed",
+            "检测到未完成的更新任务（工作进程已退出），请检查后重试。",
+        )
+    };
+
+    let _ = write_job_state(
+        config,
+        &UpdateJobState {
+            phase: phase.to_string(),
+            message: message.to_string(),
+            output: state.output,
+            version: state.version,
+            git_commit: state.git_commit,
+            worker_pid: None,
+        },
+    );
+}
+
+pub fn update_job_status(config: &AppConfig) -> AppUpdateStatus {
+    let Some(state) = normalize_job_state(config) else {
         return idle_update_status(config);
     };
 
-    let active = matches!(state.phase.as_str(), "running" | "restarting");
+    let active = is_job_active(&state);
 
     AppUpdateStatus {
         active,
@@ -104,9 +144,10 @@ pub fn update_job_status(config: &AppConfig) -> AppUpdateStatus {
 }
 
 pub fn spawn_background_update(config: &AppConfig) -> Result<AppUpdateResult> {
-    let current = update_job_status(config);
-    if current.active {
-        return Err(anyhow!("已有更新任务正在执行，请等待完成后再试。"));
+    if let Some(state) = normalize_job_state(config) {
+        if is_job_active(&state) {
+            return Err(anyhow!("已有更新任务正在执行，请等待完成后再试。"));
+        }
     }
 
     let git = read_git_state(&config.repo_root, true)
@@ -137,6 +178,7 @@ pub fn spawn_background_update(config: &AppConfig) -> Result<AppUpdateResult> {
             output: String::new(),
             version: config.version.clone(),
             git_commit: Some(git_commit.clone()),
+            worker_pid: None,
         },
     )?;
 
@@ -154,19 +196,23 @@ pub fn spawn_background_update(config: &AppConfig) -> Result<AppUpdateResult> {
 }
 
 pub fn run_update_worker(config: &AppConfig, parent_pid: u32) -> Result<()> {
+    register_update_worker_pid(config);
+
     let profile = detect_build_profile();
     let result = pull_and_build_inner(config, profile);
 
     match result {
         Ok(inner) if inner.success => {
+            // 先写入 success，避免重启过程中 worker 被杀导致锁卡在 restarting。
             write_job_state(
                 config,
                 &UpdateJobState {
-                    phase: "restarting".to_string(),
-                    message: "构建完成，正在自动重启服务…".to_string(),
+                    phase: "success".to_string(),
+                    message: "更新完成，服务正在重启…".to_string(),
                     output: inner.output.clone(),
                     version: inner.version.clone(),
                     git_commit: inner.git_commit.clone(),
+                    worker_pid: Some(std::process::id()),
                 },
             )?;
 
@@ -179,21 +225,12 @@ pub fn run_update_worker(config: &AppConfig, parent_pid: u32) -> Result<()> {
                         output: inner.output,
                         version: inner.version,
                         git_commit: inner.git_commit,
+                        worker_pid: None,
                     },
                 )?;
                 return Err(error);
             }
 
-            write_job_state(
-                config,
-                &UpdateJobState {
-                    phase: "success".to_string(),
-                    message: "更新完成，服务已自动重启。".to_string(),
-                    output: inner.output,
-                    version: inner.version,
-                    git_commit: inner.git_commit,
-                },
-            )?;
             Ok(())
         }
         Ok(inner) => {
@@ -205,6 +242,7 @@ pub fn run_update_worker(config: &AppConfig, parent_pid: u32) -> Result<()> {
                     output: inner.output,
                     version: inner.version,
                     git_commit: inner.git_commit,
+                    worker_pid: None,
                 },
             )?;
             Ok(())
@@ -218,6 +256,7 @@ pub fn run_update_worker(config: &AppConfig, parent_pid: u32) -> Result<()> {
                     output: error.to_string(),
                     version: config.version.clone(),
                     git_commit: None,
+                    worker_pid: None,
                 },
             )?;
             Err(error)
@@ -358,6 +397,70 @@ fn read_job_state(config: &AppConfig) -> Option<UpdateJobState> {
     serde_json::from_str(&raw).ok()
 }
 
+fn is_job_active(state: &UpdateJobState) -> bool {
+    matches!(state.phase.as_str(), "running" | "restarting")
+}
+
+fn normalize_job_state(config: &AppConfig) -> Option<UpdateJobState> {
+    let state = read_job_state(config)?;
+
+    if !is_job_active(&state) {
+        return Some(state);
+    }
+
+    let worker_alive = state
+        .worker_pid
+        .map(process_alive)
+        .unwrap_or(false);
+
+    let stale = match state.phase.as_str() {
+        "restarting" => !worker_alive,
+        "running" => state.worker_pid.is_some() && !worker_alive,
+        _ => false,
+    };
+
+    if !stale {
+        return Some(state);
+    }
+
+    let (phase, message) = if state.phase == "restarting" {
+        (
+            "success",
+            "更新已完成（上次重启后任务状态已自动恢复）。",
+        )
+    } else {
+        (
+            "failed",
+            "更新任务已中断（工作进程已结束），请检查后重试。",
+        )
+    };
+
+    let normalized = UpdateJobState {
+        phase: phase.to_string(),
+        message: message.to_string(),
+        output: state.output,
+        version: state.version,
+        git_commit: state.git_commit,
+        worker_pid: None,
+    };
+    let _ = write_job_state(config, &normalized);
+    Some(normalized)
+}
+
+fn register_update_worker_pid(config: &AppConfig) {
+    let worker_pid = std::process::id();
+    let Some(mut state) = read_job_state(config) else {
+        return;
+    };
+
+    if !is_job_active(&state) {
+        return;
+    }
+
+    state.worker_pid = Some(worker_pid);
+    let _ = write_job_state(config, &state);
+}
+
 fn detect_build_profile() -> BuildProfile {
     if let Ok(exe) = std::env::current_exe() {
         let path = exe.to_string_lossy();
@@ -488,7 +591,29 @@ fn wait_for_process_exit(pid: u32, timeout_secs: u64) -> Result<()> {
 }
 
 fn process_alive(pid: u32) -> bool {
-    Path::new(&format!("/proc/{pid}")).exists()
+    #[cfg(unix)]
+    {
+        return Path::new(&format!("/proc/{pid}")).exists();
+    }
+
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x08000000;
+
+        let filter = format!("PID eq {pid}");
+        let output = Command::new("tasklist")
+            .args(["/FI", &filter, "/NH"])
+            .creation_flags(CREATE_NO_WINDOW)
+            .output();
+
+        return output
+            .map(|capture| {
+                String::from_utf8_lossy(&capture.stdout)
+                    .contains(&pid.to_string())
+            })
+            .unwrap_or(false);
+    }
 }
 
 fn shell_quote(path: &Path) -> String {
