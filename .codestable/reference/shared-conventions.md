@@ -12,7 +12,6 @@ onboard 完成后骨架（`cs-onboard` 负责搭建）：
 
 ```
 .codestable/
-├── attention.md           CodeStable 技能启动必读的项目注意事项
 ├── requirements/          能力愿景层（"用户需要什么、系统提供什么能力来满足"，过去/现在/未来）
 │   ├── VISION.md           中心索引（按 status 分组，每条带 pitch 一句话）
 │   └── {slug}.md           一个能力一份，扁平（cs-req 产出）
@@ -50,6 +49,9 @@ onboard 完成后骨架（`cs-onboard` 负责搭建）：
 │                          验完不强制清理，结论回写到对应 brainstorm note
 ├── tools/                 跨工作流共享脚本（onboard 从技能包释放）
 └── reference/             共享参考文档（onboard 从技能包释放）
+    ├── attention.md       CodeStable 技能启动必读的项目注意事项
+    ├── shared-conventions.md
+    └── system-overview.md
 ```
 
 ### 命名规则
@@ -59,7 +61,7 @@ onboard 完成后骨架（`cs-onboard` 负责搭建）：
 - feature / issue / refactor 目录：带日期前缀 `YYYY-MM-DD-{slug}`
 - 沉淀类：`compound/YYYY-MM-DD-{doc_type}-{slug}.md`，日期用**归档当天**
 - 架构 doc：`architecture/{type}-{slug}.md`（长效，不带日期前缀）；总入口固定 `ARCHITECTURE.md`
-- 项目注意事项入口固定为 `.codestable/attention.md`，所有 CodeStable 子技能启动前必须读取；不再兼容 `AGENTS.md` / `CLAUDE.md` 等外部入口
+- 项目注意事项入口固定为 `.codestable/reference/attention.md`，所有 CodeStable 子技能启动前必须读取；不再兼容 `AGENTS.md` / `CLAUDE.md` 等外部入口
 
 ### 架构 doc 分组规则（同类聚合）
 
@@ -220,7 +222,7 @@ feature-design / issue-analyze / issue-fix 动手前到 `.codestable/compound/` 
 1. **只增不删**——已归档除非被明确取代（`status=superseded`）否则不删；理由丢失成本极高
 2. **宁缺毋滥**——用户说不出理由的节直接省略，不要 AI 编造
 3. **不替用户写实质内容**——AI 负责起草结构和串联语言，实质结论必须来自用户或可追溯的代码证据
-4. **attention.md 检查**——写完后若沉淀暴露出"每次启动都该知道"的一两行硬约束，提示用户用 `cs-note` 追加到 `.codestable/attention.md`；不要直接改外部 AI 入口
+4. **attention.md 检查**——写完后若沉淀暴露出"每次启动都该知道"的一两行硬约束，提示用户用 `cs-note` 追加到 `.codestable/reference/attention.md`；不要直接改外部 AI 入口
 5. **起草前先查重叠**——动手写前用 `search-yaml.py --query` 查语义相近的旧文档。命中就把候选列给用户在三条路径里选：
    - **更新已有**（默认优先）：沿用原文件名和原创建日期，**不新建**；frontmatter 补 `updated: YYYY-MM-DD`；超出小修在文末加"YYYY-MM-DD 更新"简述
    - **supersede**：旧文档保留原文，`status: superseded` + `superseded-by: {新文件名}`，正文顶部加 `**[已取代]** 见 {新 slug}`；新文档 frontmatter 带 `supersedes: {旧文件名}`

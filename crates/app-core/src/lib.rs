@@ -1,20 +1,23 @@
+mod runtime_cache;
 mod update;
 
 use anyhow::{bail, Context, Result};
 use cursor_provider::CursorProvider;
 use host_model::{
     ActionMessage, AgentSummary, AppSettings, AppStatus, AppUpdateResult, AppUpdateStatus,
-    CursorAccountStatus, CursorAuthFlowStatus, CursorLoginSessionStatus, CursorLoginStartResult,
-    CursorRuntimeStatus, KnownConfig, OverviewAgentItem, OverviewData, OverviewPluginItem,
-    PluginDetail, PluginSummary, RawConfigDocument, RawConfigPreview, RuntimeActionResult,
-    SkillDocument, SkillFileSummary, SkillSummary,
+    CacheRefreshRequest, CursorAccountStatus, CursorAuthFlowStatus, CursorLoginSessionStatus,
+    CursorLoginStartResult, CursorRuntimeStatus, KnownConfig, OverviewAgentItem, OverviewData,
+    OverviewPluginItem, PluginDetail, PluginSummary, RawConfigDocument, RawConfigPreview,
+    RuntimeActionResult, SkillDocument, SkillFileSummary, SkillSummary,
 };
 use paseo_provider::PaseoProvider;
+use runtime_cache::{RefreshScope, RefreshTiming, RuntimeCache};
 use std::collections::HashSet;
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
+use tracing::{info, warn};
 use uuid::Uuid;
 
 pub use update::parse_update_worker_parent_pid;
@@ -103,6 +106,7 @@ impl AppConfig {
 pub struct AppState {
     pub config: AppConfig,
     pub sessions: Arc<RwLock<HashSet<String>>>,
+    cache: Arc<RwLock<RuntimeCache>>,
 }
 
 impl AppState {
@@ -110,7 +114,68 @@ impl AppState {
         Ok(Self {
             config,
             sessions: Arc::new(RwLock::new(HashSet::new())),
+            cache: Arc::new(RwLock::new(RuntimeCache::new())),
         })
+    }
+
+    pub fn warmup_cache(&self) {
+        if let Err(error) = self.refresh_cache(RefreshScope::All) {
+            warn!(error = %error, "runtime cache warmup failed");
+        }
+    }
+
+    pub fn refresh_cache(&self, scope: RefreshScope) -> Result<ActionMessage> {
+        let timing = RefreshTiming::new(scope.clone());
+        let message = match scope {
+            RefreshScope::All => {
+                self.refresh_overview_bundle()?;
+                self.refresh_cursor_runtime_internal()?;
+                self.refresh_cursor_account_internal()?;
+                self.refresh_plugin_detail_internal("paseo")?;
+                "已刷新全部运行时缓存".to_string()
+            }
+            RefreshScope::Overview => {
+                self.refresh_overview_bundle()?;
+                "已刷新 overview 缓存".to_string()
+            }
+            RefreshScope::Agents => {
+                self.refresh_agents_internal()?;
+                "已刷新 agents 缓存".to_string()
+            }
+            RefreshScope::Plugins => {
+                self.refresh_plugins_internal()?;
+                "已刷新 plugins 缓存".to_string()
+            }
+            RefreshScope::Plugin(plugin_id) => {
+                self.refresh_plugin_detail_internal(&plugin_id)?;
+                format!("已刷新 plugin:{plugin_id} 缓存")
+            }
+            RefreshScope::CursorRuntime => {
+                self.refresh_cursor_runtime_internal()?;
+                "已刷新 cursor_runtime 缓存".to_string()
+            }
+            RefreshScope::CursorAccount => {
+                self.refresh_cursor_account_internal()?;
+                "已刷新 cursor_account 缓存".to_string()
+            }
+        };
+
+        info!(
+            scope = timing.scope.label(),
+            elapsed_ms = timing.elapsed_ms(),
+            "runtime cache refreshed"
+        );
+
+        Ok(ActionMessage { message })
+    }
+
+    pub fn refresh_cache_request(&self, request: &CacheRefreshRequest) -> Result<ActionMessage> {
+        let scope = RefreshScope::parse(
+            request.scope.trim(),
+            request.plugin_id.as_deref(),
+        )
+        .map_err(|message| anyhow::anyhow!(message))?;
+        self.refresh_cache(scope)
     }
 
     pub fn login(&self, token: &str) -> Option<String> {
@@ -145,32 +210,21 @@ impl AppState {
     }
 
     pub fn overview(&self) -> OverviewData {
-        let status = self.status();
-
-        OverviewData {
-            app_name: status.app_name,
-            version: status.version,
-            mode: status.mode,
-            agents: self
-                .list_agents()
-                .into_iter()
-                .map(|agent| OverviewAgentItem {
-                    id: agent.id,
-                    name: agent.name,
-                    installed: agent.installed,
-                    version: agent.version,
-                })
-                .collect(),
-            plugins: self
-                .list_plugins()
-                .into_iter()
-                .map(|plugin| OverviewPluginItem {
-                    id: plugin.id,
-                    name: plugin.name,
-                    installed: plugin.installed,
-                })
-                .collect(),
+        if let Some(overview) = self
+            .cache
+            .read()
+            .expect("runtime cache lock poisoned")
+            .overview()
+            .cloned()
+        {
+            return overview;
         }
+
+        self.refresh_overview_bundle()
+            .unwrap_or_else(|error| {
+                warn!(error = %error, "failed to refresh overview cache on read");
+                self.build_overview_from_live()
+            })
     }
 
     pub fn app_settings(&self) -> AppSettings {
@@ -196,59 +250,152 @@ impl AppState {
     }
 
     pub fn list_agents(&self) -> Vec<AgentSummary> {
-        self.provider().list_agents()
+        if let Some(agents) = self
+            .cache
+            .read()
+            .expect("runtime cache lock poisoned")
+            .agents()
+            .cloned()
+        {
+            return agents;
+        }
+
+        self.refresh_agents_internal()
+            .unwrap_or_else(|error| {
+                warn!(error = %error, "failed to refresh agents cache on read");
+                self.provider().list_agents()
+            })
     }
 
     pub fn install_agent(&self, agent_id: &str) -> Result<RuntimeActionResult> {
-        self.provider().install_agent(agent_id)
+        let result = self.provider().install_agent(agent_id)?;
+        self.after_agent_mutation();
+        Ok(result)
     }
 
     pub fn upgrade_agent(&self, agent_id: &str) -> Result<RuntimeActionResult> {
-        self.provider().upgrade_agent(agent_id)
+        let result = self.provider().upgrade_agent(agent_id)?;
+        self.after_agent_mutation();
+        Ok(result)
     }
 
     pub fn uninstall_agent(&self, agent_id: &str) -> Result<RuntimeActionResult> {
-        self.provider().uninstall_agent(agent_id)
+        let result = self.provider().uninstall_agent(agent_id)?;
+        self.after_agent_mutation();
+        Ok(result)
     }
 
     pub fn list_plugins(&self) -> Vec<PluginSummary> {
-        self.paseo_provider().list_plugins()
+        if let Some(plugins) = self
+            .cache
+            .read()
+            .expect("runtime cache lock poisoned")
+            .plugins()
+            .cloned()
+        {
+            return plugins;
+        }
+
+        self.refresh_plugins_internal()
+            .unwrap_or_else(|error| {
+                warn!(error = %error, "failed to refresh plugins cache on read");
+                self.paseo_provider().list_plugins()
+            })
     }
 
     pub fn plugin_detail(&self, plugin_id: &str) -> Result<PluginDetail> {
-        self.paseo_provider().plugin_detail(plugin_id)
+        if let Some(detail) = self
+            .cache
+            .read()
+            .expect("runtime cache lock poisoned")
+            .plugin_detail(plugin_id)
+            .cloned()
+        {
+            return Ok(detail);
+        }
+
+        self.refresh_plugin_detail_internal(plugin_id)
     }
 
     pub fn install_plugin(&self, plugin_id: &str) -> Result<RuntimeActionResult> {
-        self.paseo_provider().install_plugin(plugin_id)
+        let result = self.paseo_provider().install_plugin(plugin_id)?;
+        self.after_plugin_mutation(plugin_id);
+        Ok(result)
     }
 
     pub fn upgrade_plugin(&self, plugin_id: &str) -> Result<RuntimeActionResult> {
-        self.paseo_provider().upgrade_plugin(plugin_id)
+        let result = self.paseo_provider().upgrade_plugin(plugin_id)?;
+        self.after_plugin_mutation(plugin_id);
+        Ok(result)
     }
 
     pub fn uninstall_plugin(&self, plugin_id: &str) -> Result<RuntimeActionResult> {
-        self.paseo_provider().uninstall_plugin(plugin_id)
+        let result = self.paseo_provider().uninstall_plugin(plugin_id)?;
+        self.after_plugin_mutation(plugin_id);
+        Ok(result)
     }
 
     pub fn paseo_daemon_action(&self, plugin_id: &str, action: &str) -> Result<ActionMessage> {
-        self.paseo_provider().daemon_action(plugin_id, action)
+        let result = self.paseo_provider().daemon_action(plugin_id, action)?;
+        self.after_daemon_mutation(plugin_id);
+        Ok(result)
     }
 
     pub fn cursor_runtime_status(&self) -> CursorRuntimeStatus {
-        self.provider().runtime_status()
+        if let Some(status) = self
+            .cache
+            .read()
+            .expect("runtime cache lock poisoned")
+            .cursor_runtime()
+            .cloned()
+        {
+            return status;
+        }
+
+        self.refresh_cursor_runtime_internal()
+            .unwrap_or_else(|error| {
+                warn!(error = %error, "failed to refresh cursor runtime cache on read");
+                self.provider().runtime_status()
+            })
     }
 
     pub fn install_cursor_runtime(&self) -> Result<RuntimeActionResult> {
-        self.provider().install_latest_runtime()
+        let result = self.provider().install_latest_runtime()?;
+        self.after_cursor_runtime_mutation();
+        Ok(result)
     }
 
     pub fn upgrade_cursor_runtime(&self) -> Result<RuntimeActionResult> {
-        self.provider().upgrade_runtime()
+        let result = self.provider().upgrade_runtime()?;
+        self.after_cursor_runtime_mutation();
+        Ok(result)
     }
 
     pub fn cursor_account_status(&self) -> CursorAccountStatus {
-        self.provider().account_status()
+        if self.provider().login_session_status().active {
+            let status = self.provider().account_status();
+            self.cache
+                .write()
+                .expect("runtime cache lock poisoned")
+                .set_cursor_account(status.clone());
+            return status;
+        }
+
+        if let Some(status) = self
+            .cache
+            .read()
+            .expect("runtime cache lock poisoned")
+            .cursor_account()
+            .cloned()
+        {
+            return status;
+        }
+
+        self.refresh_cursor_account_internal()
+            .unwrap_or_else(|error| {
+                warn!(error = %error, "failed to refresh cursor account cache on read");
+                self.provider().account_status()
+            })
     }
 
     pub fn cursor_auth_flow_status(&self) -> CursorAuthFlowStatus {
@@ -256,7 +403,11 @@ impl AppState {
     }
 
     pub fn start_cursor_login(&self) -> CursorLoginStartResult {
-        self.provider().start_login()
+        let result = self.provider().start_login();
+        if result.started || result.already_logged_in {
+            self.after_cursor_account_mutation();
+        }
+        result
     }
 
     pub fn cursor_login_session_status(&self) -> CursorLoginSessionStatus {
@@ -264,7 +415,9 @@ impl AppState {
     }
 
     pub fn logout_cursor(&self) -> Result<ActionMessage> {
-        self.provider().logout()
+        let result = self.provider().logout()?;
+        self.after_cursor_account_mutation();
+        Ok(result)
     }
 
     pub fn known_config(&self) -> Result<KnownConfig> {
@@ -301,6 +454,147 @@ impl AppState {
 
     pub fn update_skill(&self, id: &str, content: &str) -> Result<SkillDocument> {
         self.provider().update_skill(id, content)
+    }
+
+    fn refresh_overview_bundle(&self) -> Result<OverviewData> {
+        let agents = self.provider().list_agents();
+        let plugins = self.paseo_provider().list_plugins();
+        let overview = self.build_overview_from_parts(&agents, &plugins);
+        let mut cache = self.cache.write().expect("runtime cache lock poisoned");
+        cache.set_agents(agents);
+        cache.set_plugins(plugins);
+        cache.set_overview(overview.clone());
+        Ok(overview)
+    }
+
+    fn refresh_agents_internal(&self) -> Result<Vec<AgentSummary>> {
+        let agents = self.provider().list_agents();
+        self.cache
+            .write()
+            .expect("runtime cache lock poisoned")
+            .set_agents(agents.clone());
+        Ok(agents)
+    }
+
+    fn refresh_plugins_internal(&self) -> Result<Vec<PluginSummary>> {
+        let plugins = self.paseo_provider().list_plugins();
+        self.cache
+            .write()
+            .expect("runtime cache lock poisoned")
+            .set_plugins(plugins.clone());
+        Ok(plugins)
+    }
+
+    fn refresh_plugin_detail_internal(&self, plugin_id: &str) -> Result<PluginDetail> {
+        let detail = self.paseo_provider().plugin_detail(plugin_id)?;
+        self.cache
+            .write()
+            .expect("runtime cache lock poisoned")
+            .set_plugin_detail(plugin_id, detail.clone());
+        Ok(detail)
+    }
+
+    fn refresh_cursor_runtime_internal(&self) -> Result<CursorRuntimeStatus> {
+        let status = self.provider().runtime_status();
+        self.cache
+            .write()
+            .expect("runtime cache lock poisoned")
+            .set_cursor_runtime(status.clone());
+        Ok(status)
+    }
+
+    fn refresh_cursor_account_internal(&self) -> Result<CursorAccountStatus> {
+        let status = self.provider().account_status();
+        self.cache
+            .write()
+            .expect("runtime cache lock poisoned")
+            .set_cursor_account(status.clone());
+        Ok(status)
+    }
+
+    fn build_overview_from_live(&self) -> OverviewData {
+        let agents = self.provider().list_agents();
+        let plugins = self.paseo_provider().list_plugins();
+        self.build_overview_from_parts(&agents, &plugins)
+    }
+
+    fn build_overview_from_parts(
+        &self,
+        agents: &[AgentSummary],
+        plugins: &[PluginSummary],
+    ) -> OverviewData {
+        let status = self.status();
+        OverviewData {
+            app_name: status.app_name,
+            version: status.version,
+            mode: status.mode,
+            agents: agents
+                .iter()
+                .map(|agent| OverviewAgentItem {
+                    id: agent.id.clone(),
+                    name: agent.name.clone(),
+                    installed: agent.installed,
+                    version: agent.version.clone(),
+                })
+                .collect(),
+            plugins: plugins
+                .iter()
+                .map(|plugin| OverviewPluginItem {
+                    id: plugin.id.clone(),
+                    name: plugin.name.clone(),
+                    installed: plugin.installed,
+                })
+                .collect(),
+        }
+    }
+
+    fn after_agent_mutation(&self) {
+        self.refresh_after_mutation(|| {
+            self.refresh_overview_bundle()?;
+            self.refresh_cursor_runtime_internal()?;
+            self.refresh_cursor_account_internal()?;
+            Ok(())
+        });
+    }
+
+    fn after_plugin_mutation(&self, plugin_id: &str) {
+        let plugin_id = plugin_id.to_string();
+        self.refresh_after_mutation(|| {
+            self.refresh_overview_bundle()?;
+            self.refresh_plugins_internal()?;
+            self.refresh_plugin_detail_internal(&plugin_id)?;
+            Ok(())
+        });
+    }
+
+    fn after_daemon_mutation(&self, plugin_id: &str) {
+        let plugin_id = plugin_id.to_string();
+        self.refresh_after_mutation(|| {
+            self.refresh_plugins_internal()?;
+            self.refresh_plugin_detail_internal(&plugin_id)?;
+            Ok(())
+        });
+    }
+
+    fn after_cursor_runtime_mutation(&self) {
+        self.refresh_after_mutation(|| {
+            self.refresh_overview_bundle()?;
+            self.refresh_cursor_runtime_internal()?;
+            Ok(())
+        });
+    }
+
+    fn after_cursor_account_mutation(&self) {
+        self.refresh_after_mutation(|| self.refresh_cursor_account_internal().map(|_| ()));
+    }
+
+    fn refresh_after_mutation<F>(&self, refresh: F)
+    where
+        F: FnOnce() -> Result<()>,
+    {
+        if let Err(error) = refresh() {
+            warn!(error = %error, "runtime cache refresh after mutation failed");
+        }
     }
 
     fn provider(&self) -> CursorProvider {

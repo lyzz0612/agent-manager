@@ -14,6 +14,7 @@ import {
   useRouter,
 } from "./routing";
 import type { AppStatus, MessageKind, SessionStatus } from "./types";
+import { cacheRefreshPayload } from "./utils/cacheRefresh";
 
 export default function App() {
   const { route, refreshKey, navigate, refresh } = useRouter();
@@ -94,6 +95,25 @@ export default function App() {
   }, [route]);
 
   const activePage = routePage(route);
+  const [headerRefreshing, setHeaderRefreshing] = useState(false);
+
+  const handleHeaderRefresh = useCallback(async () => {
+    setHeaderRefreshing(true);
+    try {
+      const payload = cacheRefreshPayload(route);
+      if (payload) {
+        await requestJson<{ message: string }>("/api/cache/refresh", {
+          method: "POST",
+          body: JSON.stringify(payload),
+        });
+      }
+      refresh();
+    } catch (error) {
+      reportError(getErrorMessage(error));
+    } finally {
+      setHeaderRefreshing(false);
+    }
+  }, [refresh, reportError, route]);
 
   if (bootLoading) {
     return <PageLoading label="正在加载管理页..." />;
@@ -213,6 +233,14 @@ export default function App() {
       <div className="main">
         <header className="main-header">
           <h2>{mainTitle}</h2>
+          <button
+            className="ghost header-refresh"
+            disabled={headerRefreshing}
+            onClick={() => void handleHeaderRefresh()}
+            type="button"
+          >
+            {headerRefreshing ? "刷新中..." : "刷新"}
+          </button>
         </header>
 
         {message ? (

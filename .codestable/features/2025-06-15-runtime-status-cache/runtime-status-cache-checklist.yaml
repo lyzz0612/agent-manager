@@ -1,0 +1,72 @@
+feature: 2025-06-15-runtime-status-cache
+created: 2025-06-15
+
+steps:
+  - action: "编排骨架：RuntimeCache + scope 枚举 + GET 走 get_or_compute stub + POST /api/cache/refresh 路由"
+    exit_signal: "cargo build 通过；GET 仍返回数据；POST refresh 返回 ActionMessage"
+    status: done
+
+  - action: "计算节点（后端）：各 scope 真实探测、overview 一次组装、启动 warmup spawn"
+    exit_signal: "重启后 warmup 日志可见；预热完成后重复 GET /agents 不重复触发 CLI"
+    status: done
+
+  - action: "计算节点（后端）：mutation 成功路径挂自动 refresh 表"
+    exit_signal: "install/uninstall/daemon/登出后相关 GET 立即一致，无需手动 F5"
+    status: done
+
+  - action: "前端：main-header 刷新按钮 + 页级 scope 映射 + POST refresh 后重拉"
+    exit_signal: "Overview/Agents/Plugins/Skills/Settings 页头可见刷新；点击后数据更新"
+    status: done
+
+  - action: "联调验收：dev 或 compose-check 覆盖第 3 节关键场景"
+    exit_signal: "design 第 3 节场景 1–10 均有可观察证据"
+    status: done
+
+checks:
+  - item: "RuntimeCache 按 CacheScope 存储 agents/plugins/overview/plugin:{id}/cursor_runtime/cursor_account 快照"
+    source: 名词契约
+    status: passed
+
+  - item: "POST /api/cache/refresh 接受 scope 并在成功时返回 ActionMessage；未知 scope 返回 400"
+    source: 名词契约
+    status: passed
+
+  - item: "GET 读路径：命中 cache 直接返回；miss 同步计算并写入"
+    source: 编排骨架
+    status: passed
+
+  - item: "启动后 tokio::spawn warmup(scope=all)，不阻塞 listen"
+    source: 编排骨架
+    status: passed
+
+  - item: "mutation 成功后对 design 2.2 表格内 scope 自动 refresh"
+    source: 编排骨架
+    status: passed
+
+  - item: "overview 刷新一次组装 agents+plugins，避免双份 CLI"
+    source: 流程级约束
+    status: passed
+
+  - item: "POST /api/cache/refresh 路由已注册且需登录"
+    source: 挂载点
+    status: passed
+
+  - item: "main-header 刷新按钮已挂载"
+    source: 挂载点
+    status: passed
+
+  - item: "无 rusqlite/SQLite cache 实现"
+    source: 范围守护
+    status: passed
+
+  - item: "GET /app/settings 未改读 RuntimeCache；POST /app/update/check 仍 git fetch"
+    source: 范围守护
+    status: passed
+
+  - item: "侧边栏「刷新当前页」仍存在"
+    source: 范围守护
+    status: passed
+
+  - item: "场景：缓存命中快速读、页头刷新、mutation 自动一致、settings 维持现状"
+    source: 验收场景
+    status: passed

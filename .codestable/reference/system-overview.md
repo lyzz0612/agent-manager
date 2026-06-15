@@ -27,7 +27,7 @@ CodeStable 把这几类场景各配一套子技能，产物放进统一的目录
 - `cs-trick` — 处方"以后做 X 就这样做"
 - `cs-decide` — 规定"全项目今后都按 X 来"
 - `cs-explore` — 存档"调查了 X 问题,看到代码里是这样的"
-- `cs-note` — 把一两行启动必读的项目注意事项追加到 `.codestable/attention.md`
+- `cs-note` — 把一两行启动必读的项目注意事项追加到 `.codestable/reference/attention.md`
 
 **讨论层**——想法还模糊时的统一入口,不直接产出设计或代码:
 
@@ -110,5 +110,5 @@ AI 最常见的问题是一口气铺几百行代码才让人看——等发现�
 
 ## 相关
 
-- `.codestable/attention.md` — CodeStable 技能启动必读的项目注意事项
+- `.codestable/reference/attention.md` — CodeStable 技能启动必读的项目注意事项
 - `.codestable/architecture/ARCHITECTURE.md` — 项目架构总入口

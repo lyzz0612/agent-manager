@@ -99,7 +99,7 @@
 - `.codestable/requirements/` — 项目说明与能力愿景
 - `.codestable/architecture/` — 技术方案
 - `.codestable/compound/decision/` — 已拍板约束
-- `.codestable/attention.md` — 运行与部署说明
+- `.codestable/reference/attention.md` — 运行与部署说明
 
 ## 10. 后续拆分建议
 

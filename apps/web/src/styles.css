@@ -136,6 +136,10 @@ textarea {
   font-weight: 600;
 }
 
+.header-refresh {
+  flex-shrink: 0;
+}
+
 .main-body {
   flex: 1;
   padding: 24px;

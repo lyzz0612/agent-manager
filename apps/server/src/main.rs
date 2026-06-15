@@ -9,7 +9,8 @@ use axum::{
 use host_model::{
     ActionMessage, AgentSummary, AppSettings, AppStatus, AppUpdateResult, AppUpdateStatus,
     AuthLoginRequest,
-    AuthLoginResponse, CursorAccountStatus, CursorAuthFlowStatus, CursorLoginSessionStatus,
+    AuthLoginResponse, CacheRefreshRequest, CursorAccountStatus, CursorAuthFlowStatus,
+    CursorLoginSessionStatus,
     CursorLoginStartResult, CursorRuntimeStatus,
     KnownConfig, OverviewData, PluginDetail, PluginSummary, RawConfigDocument, RawConfigPreview,
     RawConfigUpdateRequest, RuntimeActionResult, SessionStatus, SkillDocument, SkillFileSummary,
@@ -59,7 +60,7 @@ async fn main() -> anyhow::Result<()> {
     }
 
     tracing_subscriber::fmt()
-        .with_env_filter("agent_manager_server=info,tower_http=info")
+        .with_env_filter("agent_manager_server=info,app_core=info,tower_http=info")
         .init();
 
     let repo_root = std::env::current_dir()?;
@@ -67,6 +68,12 @@ async fn main() -> anyhow::Result<()> {
     let port = config.port;
     let web_dist_dir = config.web_dist_dir.clone();
     let state = Arc::new(AppState::new(config)?);
+    let warmup_state = state.clone();
+    tokio::spawn(async move {
+        tokio::task::spawn_blocking(move || warmup_state.warmup_cache())
+            .await
+            .ok();
+    });
 
     let api = Router::new()
         .route("/health", get(health))
@@ -79,6 +86,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/auth/login", post(login))
         .route("/auth/session", get(session_status))
         .route("/auth/logout", post(logout))
+        .route("/cache/refresh", post(refresh_runtime_cache))
         .route("/agents", get(list_agents))
         .route("/agents/:id/install", post(install_agent))
         .route("/agents/:id/upgrade", post(upgrade_agent))
@@ -234,6 +242,23 @@ async fn logout(
     }
 
     Ok(([(SET_COOKIE, clear_session_cookie())], StatusCode::NO_CONTENT))
+}
+
+async fn refresh_runtime_cache(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(payload): Json<CacheRefreshRequest>,
+) -> Result<Json<ActionMessage>, ApiError> {
+    ensure_authenticated(&state, &headers)?;
+    Ok(Json(state.refresh_cache_request(&payload).map_err(|error| {
+        if error.to_string().contains("未知 cache scope")
+            || error.to_string().contains("plugin scope")
+        {
+            ApiError::new(StatusCode::BAD_REQUEST, error.to_string())
+        } else {
+            ApiError::from(error)
+        }
+    })?))
 }
 
 async fn list_agents(

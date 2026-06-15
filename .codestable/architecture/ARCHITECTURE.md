@@ -87,6 +87,18 @@ Phase 1 中，Cursor 安装在容器内受管目录，不依赖宿主机预装�
 
 当前阶段安装失败先直接报错，不做自动重试和备用源。
 
+### 4.4 运行时状态缓存
+
+读路径（agents / plugins / overview / plugin 详情 / Cursor 运行时与账号）经进程内 `RuntimeCache` 返回快照，避免每次 GET 同步跑 CLI。
+
+快照由三类事件刷新：
+
+- 服务启动后异步 warmup（`scope=all`）
+- 用户 `POST /api/cache/refresh`
+- install / upgrade / uninstall、daemon 操作、Cursor 登录/登出等 mutation 成功后自动重算
+
+`GET /app/settings` 的 git 信息**不**进缓存；Skills / Profile 文件读写同理。
+
 ## 5. 账号与登录
 
 ### 5.1 管理页认证
@@ -157,7 +169,7 @@ Phase 1 只管理已有 skill：
 - `.codestable/architecture/` — 架构总入口（本文件）
 - `.codestable/compound/decision/` — 已拍板约束
 - `.codestable/features/` — 功能设计与验收
-- `.codestable/attention.md` — 技能启动必读（运行、脚本、凭证）
+- `.codestable/reference/attention.md` — 技能启动必读（运行、脚本、凭证）
 - 仓库 `README.md` 保留对外入口
 
 ## 9. 后续拆分建议

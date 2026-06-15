@@ -13,4 +13,5 @@ host-proc = { path = "../host-proc" }
 paseo-provider = { path = "../paseo-provider" }
 serde.workspace = true
 serde_json.workspace = true
+tracing.workspace = true
 uuid.workspace = true

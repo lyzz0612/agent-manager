@@ -208,6 +208,13 @@ pub struct ActionMessage {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CacheRefreshRequest {
+    pub scope: String,
+    #[serde(default)]
+    pub plugin_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppSettings {
     pub app_name: String,
     pub version: String,

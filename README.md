@@ -37,7 +37,7 @@
 - `.codestable/requirements/agent-manager.md` — 项目说明与 Phase 1 范围
 - `.codestable/architecture/ARCHITECTURE.md` — 技术方案与架构
 - `.codestable/compound/decision/phase1-user-decisions.md` — 已拍板约束
-- `.codestable/attention.md` — 运行、部署与环境变量
+- `.codestable/reference/attention.md` — 运行、部署与环境变量
 - `.codestable/reference/system-overview.md` — CodeStable 体系说明
 
 ## 快速入口
