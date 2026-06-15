@@ -22,6 +22,7 @@ impl PaseoProvider {
     pub fn list_plugins(&self) -> Vec<PluginSummary> {
         SUPPORTED_PLUGINS
             .iter()
+            .filter(|definition| definition.id == PASEO_PLUGIN_ID)
             .map(|definition| self.plugin_summary(definition))
             .collect()
     }
@@ -136,6 +137,7 @@ impl PaseoProvider {
         PluginSummary {
             id: definition.id.to_string(),
             name: definition.name.to_string(),
+            description: definition.description.to_string(),
             installed: status.installed,
             version: status.version,
             install_dir: status.install_dir,

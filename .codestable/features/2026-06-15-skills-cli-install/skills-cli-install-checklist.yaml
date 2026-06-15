@@ -21,56 +21,56 @@ steps:
 checks:
   - item: "GET /api/profile/skills/cli/status 返回 ready/node_version/skills_cli_version/message；不可用仍 200"
     source: 名词契约
-    status: pending
+    status: passed
 
   - item: "POST preview 接受 source 返回 skills[]；空 source 400；CLI 失败 502"
     source: 名词契约
-    status: pending
+    status: passed
 
   - item: "POST install 接受 source/skills/agents；未选或未知 agent 400；ready=false 时 503"
     source: 名词契约
-    status: pending
+    status: passed
 
   - item: "SkillsAgentMap：common→zed、cursor→cursor；未映射 agent 不可安装"
     source: 名词契约
-    status: pending
+    status: passed
 
   - item: "安装命令使用 npx skills add -g -y --copy 与映射后的 --agent/--skill"
     source: 编排骨架
-    status: pending
+    status: passed
 
   - item: "preview 仅 list（-l），不写入 skill 目录"
     source: 编排骨架
-    status: pending
+    status: passed
 
   - item: "install 请求串行化，避免并发写同一 skill 目录"
     source: 流程级约束
-    status: pending
+    status: passed
 
   - item: "/profile/skills/cli/* 三条路由已注册且需登录"
     source: 挂载点
-    status: pending
+    status: passed
 
   - item: "SkillsPage 已挂载安装入口与弹窗流程"
     source: 挂载点
-    status: pending
+    status: passed
 
   - item: "Dockerfile runtime stage 含 Node.js"
     source: 挂载点
-    status: pending
+    status: passed
 
   - item: "无 /cli/find 路由或 npx skills find 调用"
     source: 范围守护
-    status: pending
+    status: passed
 
   - item: "v1 无 update/remove/list CLI 可视化 UI"
     source: 范围守护
-    status: pending
+    status: passed
 
   - item: "GET/PUT /api/profile/skills 读写语义未改；Skills 列表不进 RuntimeCache"
     source: 范围守护
-    status: pending
+    status: passed
 
   - item: "场景：status 就绪、preview 多 skill、单 skill 安装、双 agent 目录、错误路径"
     source: 验收场景
-    status: pending
+    status: passed

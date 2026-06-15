@@ -507,6 +507,13 @@ textarea {
   color: #dce8ff;
 }
 
+.agent-card__description {
+  margin: -6px 0 0;
+  color: #9fb0cc;
+  font-size: 14px;
+  line-height: 1.5;
+}
+
 .agent-card__badge {
   flex-shrink: 0;
   padding: 4px 10px;

@@ -1,0 +1,76 @@
+feature: 2026-06-15-gh-plugin
+created: 2026-06-15
+
+steps:
+  - action: "编排骨架：gh-provider crate stub + SUPPORTED_PLUGINS 注册 + /api/gh/* 路由占位；Plugins 列表可见 gh 卡片"
+    exit_signal: "cargo build 通过；GET /api/plugins 含 gh"
+    status: done
+
+  - action: "计算节点（安装）：官方 release tarball 下载/解压/版本探测；wire install|upgrade|uninstall"
+    exit_signal: "dev 下安装后 gh --version 成功；卸载后二进制消失、~/.config/gh 保留"
+    status: done
+
+  - action: "计算节点（授权）：account_status / start_login / session 解析 / logout；RuntimeCache gh_account 与 mutation 钩子"
+    exit_signal: "device flow 可完成登录；注销后 logged_in=false"
+    status: done
+
+  - action: "前端交互：GhPluginDetailView 对标 Cursor 账号 tab（轮询 login/status）"
+    exit_signal: "UI 走通安装 → 登录 → 注销"
+    status: done
+
+  - action: "联调验收：dev 或 compose 覆盖 design 第 3 节关键场景"
+    exit_signal: "场景 1–10 有可观察证据或合理 skip 说明"
+    status: done
+
+checks:
+  - item: "GET /api/plugins 含 id=gh，official_url 指向 cli.github.com"
+    source: 验收场景
+    status: passed
+
+  - item: "GhAccountStatus / GhLoginStartResult / GhLoginSessionStatus 契约与 design 示例一致"
+    source: 名词契约
+    status: passed
+
+  - item: "/api/gh/account|auth-flow|login/start|login/status|logout 五条路由已注册且需登录"
+    source: 挂载点
+    status: passed
+
+  - item: "POST /api/plugins/gh/install|upgrade|uninstall 由 gh-provider 处理"
+    source: 挂载点
+    status: passed
+
+  - item: "Unix 安装走 GitHub 官方 release tarball，非非官方脚本"
+    source: 编排骨架
+    status: passed
+
+  - item: "登录使用 BROWSER=false + gh auth login --web --hostname github.com；解析 device_code 与 auth_url"
+    source: 编排骨架
+    status: passed
+
+  - item: "gh login session 互斥；子进程超时 ≤10 分钟"
+    source: 流程级约束
+    status: passed
+
+  - item: "pluginId=gh 渲染授权 UI；paseo daemon UI 不变"
+    source: 挂载点
+    status: passed
+
+  - item: "无 PAT/--with-token UI 或 gh auth login --with-token 调用"
+    source: 范围守护
+    status: passed
+
+  - item: "无 GHE hostname 配置"
+    source: 范围守护
+    status: passed
+
+  - item: "gh 详情无 repo/PR/issue 子命令入口"
+    source: 范围守护
+    status: passed
+
+  - item: "/api/cursor/* 语义未改"
+    source: 范围守护
+    status: passed
+
+  - item: "未安装时 POST /api/gh/login/start 返回 started=false 并提示先安装"
+    source: 验收场景
+    status: passed

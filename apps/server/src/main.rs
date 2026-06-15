@@ -12,6 +12,7 @@ use host_model::{
     AuthLoginResponse, CacheRefreshRequest, CursorAccountStatus, CursorAuthFlowStatus,
     CursorLoginSessionStatus,
     CursorLoginStartResult, CursorRuntimeStatus,
+    GhAccountStatus, GhAuthFlowStatus, GhLoginSessionStatus, GhLoginStartResult,
     KnownConfig, OverviewData, PluginDetail, PluginSummary, RawConfigDocument, RawConfigPreview,
     RawConfigUpdateRequest, RuntimeActionResult, SessionStatus, SkillDocument, SkillFileSummary,
     SkillSummary, SkillUpdateRequest, SkillsCliCapability, SkillsCliInstallRequest,
@@ -106,6 +107,11 @@ async fn main() -> anyhow::Result<()> {
         .route("/cursor/login/start", post(start_cursor_login))
         .route("/cursor/login/status", get(cursor_login_status))
         .route("/cursor/logout", post(logout_cursor))
+        .route("/gh/account", get(gh_account_status))
+        .route("/gh/auth-flow", get(gh_auth_flow_status))
+        .route("/gh/login/start", post(start_gh_login))
+        .route("/gh/login/status", get(gh_login_status))
+        .route("/gh/logout", post(logout_gh))
         .route(
             "/profile/known-config",
             get(get_known_config).put(update_known_config),
@@ -415,6 +421,46 @@ async fn logout_cursor(
 ) -> Result<Json<ActionMessage>, ApiError> {
     ensure_authenticated(&state, &headers)?;
     Ok(Json(state.logout_cursor()?))
+}
+
+async fn gh_account_status(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Result<Json<GhAccountStatus>, ApiError> {
+    ensure_authenticated(&state, &headers)?;
+    Ok(Json(state.gh_account_status()))
+}
+
+async fn gh_auth_flow_status(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Result<Json<GhAuthFlowStatus>, ApiError> {
+    ensure_authenticated(&state, &headers)?;
+    Ok(Json(state.gh_auth_flow_status()))
+}
+
+async fn start_gh_login(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Result<Json<GhLoginStartResult>, ApiError> {
+    ensure_authenticated(&state, &headers)?;
+    Ok(Json(state.start_gh_login()))
+}
+
+async fn gh_login_status(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Result<Json<GhLoginSessionStatus>, ApiError> {
+    ensure_authenticated(&state, &headers)?;
+    Ok(Json(state.gh_login_session_status()))
+}
+
+async fn logout_gh(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Result<Json<ActionMessage>, ApiError> {
+    ensure_authenticated(&state, &headers)?;
+    Ok(Json(state.logout_gh()?))
 }
 
 async fn get_known_config(

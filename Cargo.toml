@@ -7,6 +7,7 @@ members = [
   "crates/host-model",
   "crates/host-proc",
   "crates/paseo-provider",
+  "crates/gh-provider",
 ]
 resolver = "2"
 

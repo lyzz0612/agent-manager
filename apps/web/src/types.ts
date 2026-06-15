@@ -99,6 +99,7 @@ export type AgentSummary = {
 export type PluginSummary = {
   id: string;
   name: string;
+  description: string;
   installed: boolean;
   version: string | null;
   install_dir: string;
@@ -107,6 +108,34 @@ export type PluginSummary = {
   install_command: string | null;
   official_url: string;
   default_workspace: string;
+};
+
+export type GhAccountStatus = {
+  logged_in: boolean;
+  username: string | null;
+  hostname: string;
+  note: string;
+};
+
+export type GhAuthFlowStatus = {
+  summary: string;
+  steps: AuthStep[];
+};
+
+export type GhLoginStartResult = {
+  started: boolean;
+  already_logged_in: boolean;
+  auth_url: string | null;
+  device_code: string | null;
+  message: string;
+};
+
+export type GhLoginSessionStatus = {
+  active: boolean;
+  auth_url: string | null;
+  device_code: string | null;
+  message: string;
+  error: string | null;
 };
 
 export type PluginDetail = {

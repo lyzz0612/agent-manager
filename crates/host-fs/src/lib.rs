@@ -40,33 +40,107 @@ pub fn installable_skill_agent_ids() -> Vec<&'static str> {
 pub struct PluginDefinition {
     pub id: &'static str,
     pub name: &'static str,
+    pub description: &'static str,
     pub install_supported: bool,
     pub official_url: &'static str,
     pub install_command: &'static str,
     pub default_workspace: &'static str,
 }
 
+pub const GH_PLUGIN_ID: &str = "gh";
 pub const PASEO_PLUGIN_ID: &str = "paseo";
 pub const PASEO_OFFICIAL_RELAY_ENDPOINT: &str = "relay.paseo.sh:443";
 pub const PASEO_DEFAULT_WORKSPACE: &str = "/workspaces/default";
 
-/// Phase 1 支持的插件列表；扩展时在此注册即可。
-pub const SUPPORTED_PLUGINS: &[PluginDefinition] = &[PluginDefinition {
-    id: PASEO_PLUGIN_ID,
-    name: "Paseo",
-    install_supported: true,
-    official_url: "https://paseo.sh/docs",
-    install_command: "npm install -g @getpaseo/cli",
-    default_workspace: PASEO_DEFAULT_WORKSPACE,
-}];
+#[cfg(windows)]
+const GH_INSTALL_COMMAND: &str = "winget install --id GitHub.cli";
+#[cfg(not(windows))]
+const GH_INSTALL_COMMAND: &str =
+    "curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg | sudo dd of=/usr/share/keyrings/githubcli-archive-keyring.gpg && sudo apt install gh";
 
-/// Paseo 用户数据目录 → `~/.paseo`。
+/// Phase 1 支持的插件列表；扩展时在此注册即可。
+pub const SUPPORTED_PLUGINS: &[PluginDefinition] = &[
+    PluginDefinition {
+        id: PASEO_PLUGIN_ID,
+        name: "Paseo",
+        description: "Paseo CLI 与 daemon，管理 agent relay 与 workspace 配对。",
+        install_supported: true,
+        official_url: "https://paseo.sh/docs",
+        install_command: "npm install -g @getpaseo/cli",
+        default_workspace: PASEO_DEFAULT_WORKSPACE,
+    },
+    PluginDefinition {
+        id: GH_PLUGIN_ID,
+        name: "GitHub CLI",
+        description: "GitHub 官方 CLI，在网页内完成 GitHub.com OAuth 授权。",
+        install_supported: true,
+        official_url: "https://cli.github.com/",
+        install_command: GH_INSTALL_COMMAND,
+        default_workspace: "",
+    },
+];
+
+/// Paseo 用户数据目录 → `~/.paseo`；gh → `~/.config/gh`。
 pub fn plugin_home_dir(home: &Path, plugin_id: &str) -> PathBuf {
     if plugin_id == PASEO_PLUGIN_ID {
         home.join(".paseo")
+    } else if plugin_id == GH_PLUGIN_ID {
+        home.join(".config").join("gh")
     } else {
         home.join(format!(".{plugin_id}"))
     }
+}
+
+/// 当前平台的 GitHub CLI 官方安装命令（供 UI 展示）。
+pub fn gh_cli_install_command() -> &'static str {
+    GH_INSTALL_COMMAND
+}
+
+/// GitHub CLI 受管安装根目录 → `~/.local/share/gh`。
+pub fn gh_cli_install_root(home: &Path) -> PathBuf {
+    home.join(".local").join("share").join("gh")
+}
+
+/// 已安装 GitHub CLI 可执行文件候选路径。
+pub fn gh_cli_binary_candidates(home: &Path) -> Vec<PathBuf> {
+    let mut candidates = vec![home.join(".local").join("bin").join(if cfg!(windows) {
+        "gh.exe"
+    } else {
+        "gh"
+    })];
+
+    let root = gh_cli_install_root(home);
+    if let Ok(entries) = fs::read_dir(&root) {
+        let mut version_dirs = entries
+            .filter_map(Result::ok)
+            .map(|entry| entry.path())
+            .filter(|path| path.is_dir())
+            .collect::<Vec<_>>();
+        version_dirs.sort();
+        version_dirs.reverse();
+        for version_dir in version_dirs {
+            candidates.push(version_dir.join("bin").join(if cfg!(windows) {
+                "gh.exe"
+            } else {
+                "gh"
+            }));
+        }
+    }
+
+    candidates
+}
+
+/// 解析已安装的 GitHub CLI 可执行文件。
+pub fn resolve_gh_cli_binary(home: &Path) -> Result<PathBuf> {
+    for candidate in gh_cli_binary_candidates(home) {
+        if candidate.exists() {
+            return Ok(candidate.canonicalize().unwrap_or(candidate));
+        }
+    }
+
+    Err(anyhow!(
+        "未找到 GitHub CLI（~/.local/bin/gh 或 ~/.local/share/gh/*/bin/gh）"
+    ))
 }
 
 pub fn plugin_config_path(home: &Path, plugin_id: &str) -> PathBuf {

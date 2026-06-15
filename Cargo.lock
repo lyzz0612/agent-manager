@@ -39,6 +39,8 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "cursor-provider",
+ "gh-provider",
+ "host-fs",
  "host-model",
  "host-proc",
  "paseo-provider",
@@ -250,6 +252,19 @@ dependencies = [
  "r-efi",
  "wasip2",
  "wasip3",
+]
+
+[[package]]
+name = "gh-provider"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "host-fs",
+ "host-model",
+ "host-proc",
+ "regex",
+ "serde_json",
+ "tracing",
 ]
 
 [[package]]

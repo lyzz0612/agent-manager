@@ -28,6 +28,7 @@ Axum HTTP Server
   ├─ 管理页 Token 认证
   ├─ Cursor 运行时管理
   ├─ Cursor 登录引导
+  ├─ Plugin 管理（Paseo / GitHub CLI）
   ├─ 配置管理
   ├─ Skill 管理
   └─ 前端静态资源托管
@@ -57,6 +58,8 @@ apps/
 crates/
   app-core/
   cursor-provider/
+  gh-provider/
+  paseo-provider/
   host-fs/
   host-proc/
   host-model/
@@ -89,13 +92,13 @@ Phase 1 中，Cursor 安装在容器内受管目录，不依赖宿主机预装�
 
 ### 4.4 运行时状态缓存
 
-读路径（agents / plugins / overview / plugin 详情 / Cursor 运行时与账号）经进程内 `RuntimeCache` 返回快照，避免每次 GET 同步跑 CLI。
+读路径（agents / plugins / overview / plugin 详情 / Cursor 运行时与账号 / gh 账号）经进程内 `RuntimeCache` 返回快照，避免每次 GET 同步跑 CLI。
 
 快照由三类事件刷新：
 
 - 服务启动后异步 warmup（`scope=all`）
 - 用户 `POST /api/cache/refresh`
-- install / upgrade / uninstall、daemon 操作、Cursor 登录/登出等 mutation 成功后自动重算
+- install / upgrade / uninstall、daemon 操作、Cursor / GitHub CLI 登录/登出等 mutation 成功后自动重算
 
 `GET /app/settings` 的 git 信息**不**进缓存；Skills / Profile 文件读写同理。
 
@@ -119,6 +122,31 @@ Cursor 登录不和管理页登录混为一体，而是被管理对象的一部�
 - 回到网页确认结果
 - 当前账号展示按 best-effort 处理
 
+### 5.3 Plugin 与 GitHub CLI
+
+Phase 1 在 Plugins 页管理可选 CLI 插件。已注册：
+
+| plugin id | 名称 | 职责 |
+|---|---|---|
+| `paseo` | Paseo | npm 安装 CLI；daemon 启停与配对链接 |
+| `gh` | GitHub CLI | 从 GitHub 官方 release 按需安装；**GitHub.com** Web device flow 授权 |
+
+**GitHub CLI 安装**：网页触发 `POST /api/plugins/gh/install`；后端从 `api.github.com/repos/cli/cli/releases/latest` 下载对应平台 tarball/zip，解压到 `~/.local/share/gh` 并链接 `~/.local/bin/gh`。卸载移除二进制，保留 `~/.config/gh`。
+
+**GitHub CLI 授权**（平行于 Cursor `/api/cursor/*`）：
+
+| 端点 | 作用 |
+|---|---|
+| `GET /api/gh/account` | `gh auth status` 解析登录态与 username |
+| `GET /api/gh/auth-flow` | 登录引导步骤文案 |
+| `POST /api/gh/login/start` | 后台 `gh auth login --web`（`BROWSER=false`），返回 device URL 与验证码 |
+| `GET /api/gh/login/status` | 登录 session 状态 |
+| `POST /api/gh/logout` | `gh auth logout --hostname github.com` |
+
+编排约束：登录子进程最长 10 分钟；同一时刻仅一个 gh login session；`gh_account` 可经 `POST /api/cache/refresh` scope=`gh_account` 刷新。
+
+v1 **不做**：GHE、PAT 粘贴登录、repo/PR 等业务 UI。
+
 ## 6. 配置与 Skill 管理
 
 ### 6.1 配置管理
@@ -132,14 +160,24 @@ Cursor 登录不和管理页登录混为一体，而是被管理对象的一部�
 
 ### 6.2 Skill 管理
 
-Phase 1 只管理已有 skill：
+Phase 1 管理用户级 skill 目录（`~/.agents/skills`、`~/.cursor/skills` 等）：
 
-- 列出
-- 查看
-- 编辑
-- 删除
+- 列出 / 查看 / 编辑（原始文件方式）
+- **从远程仓库安装**（Web 向导 + `npx skills`）
 
-编辑采用原始文件方式，删除采用普通二次确认。
+安装流程（均需登录）：
+
+| 端点 | 作用 |
+|---|---|
+| `GET /api/profile/skills/cli/status` | 探测 Node + `npx skills` 是否可用（`ready` 为 false 仍 200，便于 UI 展示原因） |
+| `POST /api/profile/skills/cli/preview` | 对 source 执行 `add -l`，解析可选 skill 列表，**不写入目录** |
+| `POST /api/profile/skills/cli/install` | `npx skills add … -g -y --copy`，按 `SkillsAgentMap` 映射 `--agent` |
+
+`common` → npx agent `zed`（`~/.agents/skills`）；`cursor` → `cursor`（`~/.cursor/skills`）。未映射的 agent scope 不可安装。
+
+编排约束：preview / install CLI 超时 120s；install 请求服务端串行（mutex）；Skills 列表**不进** `RuntimeCache`。
+
+运行时镜像（Docker `runtime` stage）从 web-builder 复制 Node 22 + npx，使 Compose 部署下 `status.ready` 可为 true。
 
 ## 7. 交付与发布
 

@@ -91,6 +91,38 @@ pub struct CursorLoginSessionStatus {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GhAccountStatus {
+    pub logged_in: bool,
+    pub username: Option<String>,
+    pub hostname: String,
+    pub note: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GhAuthFlowStatus {
+    pub summary: String,
+    pub steps: Vec<AuthStep>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GhLoginStartResult {
+    pub started: bool,
+    pub already_logged_in: bool,
+    pub auth_url: Option<String>,
+    pub device_code: Option<String>,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct GhLoginSessionStatus {
+    pub active: bool,
+    pub auth_url: Option<String>,
+    pub device_code: Option<String>,
+    pub message: String,
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct KnownConfig {
     pub disable_telemetry: bool,
     pub auto_update: bool,
@@ -220,6 +252,7 @@ pub struct RuntimeActionResult {
 pub struct PluginSummary {
     pub id: String,
     pub name: String,
+    pub description: String,
     pub installed: bool,
     pub version: Option<String>,
     pub install_dir: String,

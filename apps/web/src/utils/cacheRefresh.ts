@@ -15,6 +15,9 @@ export function cacheRefreshPayload(route: AppRoute): CacheRefreshRequest | null
       }
       return { scope: "agents" };
     case "plugins":
+      if (route.pluginId === "gh") {
+        return { scope: "gh_account" };
+      }
       if (route.pluginId) {
         return { scope: "plugin", plugin_id: route.pluginId };
       }

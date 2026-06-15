@@ -26,7 +26,7 @@ Phase 1 明确包含：
 - Cursor 登录引导
 - best-effort 账号展示
 - 配置管理
-- 已有 skill 管理
+- 已有 skill 管理（列出 / 编辑 / **从远程仓库安装**）
 - Docker 单容器部署
 - GitHub Actions 自动发布镜像
 - 项目级文档体系
@@ -38,7 +38,7 @@ Phase 1 明确包含：
 - 多 CLI 支持
 - 多用户、多租户
 - 对话、session、终端托管
-- skill 导入
+- skill 搜索 / 更新 / 卸载的可视化（v1 安装向导仅 preview + install）
 - 卸载能力
 - 桌面端功能实现
 - 审计、历史记录和复杂任务系统

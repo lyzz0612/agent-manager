@@ -6,11 +6,14 @@ use cursor_provider::CursorProvider;
 use host_model::{
     ActionMessage, AgentSummary, AppSettings, AppStatus, AppUpdateResult, AppUpdateStatus,
     CacheRefreshRequest, CursorAccountStatus, CursorAuthFlowStatus, CursorLoginSessionStatus,
-    CursorLoginStartResult, CursorRuntimeStatus, KnownConfig, OverviewAgentItem, OverviewData,
+    CursorLoginStartResult, CursorRuntimeStatus, GhAccountStatus, GhAuthFlowStatus,
+    GhLoginSessionStatus, GhLoginStartResult, KnownConfig, OverviewAgentItem, OverviewData,
     OverviewPluginItem, PluginDetail, PluginSummary, RawConfigDocument, RawConfigPreview,
     RuntimeActionResult, SkillDocument, SkillFileSummary, SkillSummary, SkillsCliCapability,
     SkillsCliInstallRequest, SkillsCliInstallResult, SkillsCliPreviewResult,
 };
+use gh_provider::GhProvider;
+use host_fs::{GH_PLUGIN_ID, PASEO_PLUGIN_ID};
 use paseo_provider::PaseoProvider;
 use runtime_cache::{RefreshScope, RefreshTiming, RuntimeCache};
 use std::collections::HashSet;
@@ -133,7 +136,9 @@ impl AppState {
                 self.refresh_overview_bundle()?;
                 self.refresh_cursor_runtime_internal()?;
                 self.refresh_cursor_account_internal()?;
-                self.refresh_plugin_detail_internal("paseo")?;
+                self.refresh_gh_account_internal()?;
+                self.refresh_plugin_detail_internal(PASEO_PLUGIN_ID)?;
+                self.refresh_plugin_detail_internal(GH_PLUGIN_ID)?;
                 "已刷新全部运行时缓存".to_string()
             }
             RefreshScope::Overview => {
@@ -159,6 +164,10 @@ impl AppState {
             RefreshScope::CursorAccount => {
                 self.refresh_cursor_account_internal()?;
                 "已刷新 cursor_account 缓存".to_string()
+            }
+            RefreshScope::GhAccount => {
+                self.refresh_gh_account_internal()?;
+                "已刷新 gh_account 缓存".to_string()
             }
         };
 
@@ -301,7 +310,7 @@ impl AppState {
         self.refresh_plugins_internal()
             .unwrap_or_else(|error| {
                 warn!(error = %error, "failed to refresh plugins cache on read");
-                self.paseo_provider().list_plugins()
+                self.collect_plugin_summaries()
             })
     }
 
@@ -320,19 +329,19 @@ impl AppState {
     }
 
     pub fn install_plugin(&self, plugin_id: &str) -> Result<RuntimeActionResult> {
-        let result = self.paseo_provider().install_plugin(plugin_id)?;
+        let result = self.plugin_provider(plugin_id)?.install_plugin(plugin_id)?;
         self.after_plugin_mutation(plugin_id);
         Ok(result)
     }
 
     pub fn upgrade_plugin(&self, plugin_id: &str) -> Result<RuntimeActionResult> {
-        let result = self.paseo_provider().upgrade_plugin(plugin_id)?;
+        let result = self.plugin_provider(plugin_id)?.upgrade_plugin(plugin_id)?;
         self.after_plugin_mutation(plugin_id);
         Ok(result)
     }
 
     pub fn uninstall_plugin(&self, plugin_id: &str) -> Result<RuntimeActionResult> {
-        let result = self.paseo_provider().uninstall_plugin(plugin_id)?;
+        let result = self.plugin_provider(plugin_id)?.uninstall_plugin(plugin_id)?;
         self.after_plugin_mutation(plugin_id);
         Ok(result)
     }
@@ -422,6 +431,55 @@ impl AppState {
         Ok(result)
     }
 
+    pub fn gh_account_status(&self) -> GhAccountStatus {
+        if self.gh_provider().login_session_status().active {
+            let status = self.gh_provider().account_status();
+            self.cache
+                .write()
+                .expect("runtime cache lock poisoned")
+                .set_gh_account(status.clone());
+            return status;
+        }
+
+        if let Some(status) = self
+            .cache
+            .read()
+            .expect("runtime cache lock poisoned")
+            .gh_account()
+            .cloned()
+        {
+            return status;
+        }
+
+        self.refresh_gh_account_internal()
+            .unwrap_or_else(|error| {
+                warn!(error = %error, "failed to refresh gh account cache on read");
+                self.gh_provider().account_status()
+            })
+    }
+
+    pub fn gh_auth_flow_status(&self) -> GhAuthFlowStatus {
+        self.gh_provider().auth_flow_status()
+    }
+
+    pub fn start_gh_login(&self) -> GhLoginStartResult {
+        let result = self.gh_provider().start_login();
+        if result.started || result.already_logged_in {
+            self.after_gh_account_mutation();
+        }
+        result
+    }
+
+    pub fn gh_login_session_status(&self) -> GhLoginSessionStatus {
+        self.gh_provider().login_session_status()
+    }
+
+    pub fn logout_gh(&self) -> Result<ActionMessage> {
+        let result = self.gh_provider().logout()?;
+        self.after_gh_account_mutation();
+        Ok(result)
+    }
+
     pub fn known_config(&self) -> Result<KnownConfig> {
         self.provider().known_config()
     }
@@ -475,13 +533,30 @@ impl AppState {
 
     fn refresh_overview_bundle(&self) -> Result<OverviewData> {
         let agents = self.provider().list_agents();
-        let plugins = self.paseo_provider().list_plugins();
+        let plugins = self.collect_plugin_summaries();
         let overview = self.build_overview_from_parts(&agents, &plugins);
         let mut cache = self.cache.write().expect("runtime cache lock poisoned");
         cache.set_agents(agents);
         cache.set_plugins(plugins);
         cache.set_overview(overview.clone());
         Ok(overview)
+    }
+
+    fn collect_plugin_summaries(&self) -> Vec<PluginSummary> {
+        let mut plugins = self.paseo_provider().list_plugins();
+        plugins.extend(self.gh_provider().list_plugins());
+        plugins
+    }
+
+    fn plugin_provider(
+        &self,
+        plugin_id: &str,
+    ) -> Result<PluginProviderRef> {
+        match plugin_id {
+            PASEO_PLUGIN_ID => Ok(PluginProviderRef::Paseo(self.paseo_provider())),
+            GH_PLUGIN_ID => Ok(PluginProviderRef::Gh(self.gh_provider())),
+            other => Err(anyhow::anyhow!("未知插件: {other}")),
+        }
     }
 
     fn refresh_agents_internal(&self) -> Result<Vec<AgentSummary>> {
@@ -494,7 +569,7 @@ impl AppState {
     }
 
     fn refresh_plugins_internal(&self) -> Result<Vec<PluginSummary>> {
-        let plugins = self.paseo_provider().list_plugins();
+        let plugins = self.collect_plugin_summaries();
         self.cache
             .write()
             .expect("runtime cache lock poisoned")
@@ -503,7 +578,11 @@ impl AppState {
     }
 
     fn refresh_plugin_detail_internal(&self, plugin_id: &str) -> Result<PluginDetail> {
-        let detail = self.paseo_provider().plugin_detail(plugin_id)?;
+        let detail = match plugin_id {
+            PASEO_PLUGIN_ID => self.paseo_provider().plugin_detail(plugin_id)?,
+            GH_PLUGIN_ID => self.gh_provider().plugin_detail(plugin_id)?,
+            other => return Err(anyhow::anyhow!("未知插件: {other}")),
+        };
         self.cache
             .write()
             .expect("runtime cache lock poisoned")
@@ -529,9 +608,18 @@ impl AppState {
         Ok(status)
     }
 
+    fn refresh_gh_account_internal(&self) -> Result<GhAccountStatus> {
+        let status = self.gh_provider().account_status();
+        self.cache
+            .write()
+            .expect("runtime cache lock poisoned")
+            .set_gh_account(status.clone());
+        Ok(status)
+    }
+
     fn build_overview_from_live(&self) -> OverviewData {
         let agents = self.provider().list_agents();
-        let plugins = self.paseo_provider().list_plugins();
+        let plugins = self.collect_plugin_summaries();
         self.build_overview_from_parts(&agents, &plugins)
     }
 
@@ -580,6 +668,9 @@ impl AppState {
             self.refresh_overview_bundle()?;
             self.refresh_plugins_internal()?;
             self.refresh_plugin_detail_internal(&plugin_id)?;
+            if plugin_id == GH_PLUGIN_ID {
+                self.refresh_gh_account_internal()?;
+            }
             Ok(())
         });
     }
@@ -605,6 +696,10 @@ impl AppState {
         self.refresh_after_mutation(|| self.refresh_cursor_account_internal().map(|_| ()));
     }
 
+    fn after_gh_account_mutation(&self) {
+        self.refresh_after_mutation(|| self.refresh_gh_account_internal().map(|_| ()));
+    }
+
     fn refresh_after_mutation<F>(&self, refresh: F)
     where
         F: FnOnce() -> Result<()>,
@@ -620,6 +715,38 @@ impl AppState {
 
     fn paseo_provider(&self) -> PaseoProvider {
         PaseoProvider::new()
+    }
+
+    fn gh_provider(&self) -> GhProvider {
+        GhProvider::new()
+    }
+}
+
+enum PluginProviderRef {
+    Paseo(PaseoProvider),
+    Gh(GhProvider),
+}
+
+impl PluginProviderRef {
+    fn install_plugin(&self, plugin_id: &str) -> Result<RuntimeActionResult> {
+        match self {
+            Self::Paseo(provider) => provider.install_plugin(plugin_id),
+            Self::Gh(provider) => provider.install_plugin(plugin_id),
+        }
+    }
+
+    fn upgrade_plugin(&self, plugin_id: &str) -> Result<RuntimeActionResult> {
+        match self {
+            Self::Paseo(provider) => provider.upgrade_plugin(plugin_id),
+            Self::Gh(provider) => provider.upgrade_plugin(plugin_id),
+        }
+    }
+
+    fn uninstall_plugin(&self, plugin_id: &str) -> Result<RuntimeActionResult> {
+        match self {
+            Self::Paseo(provider) => provider.uninstall_plugin(plugin_id),
+            Self::Gh(provider) => provider.uninstall_plugin(plugin_id),
+        }
     }
 }
 

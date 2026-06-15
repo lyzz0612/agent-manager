@@ -17,6 +17,7 @@
 - **Compose 验收**（一级入口）：`docker-compose.yml` + `scripts/compose-check.bat` — 验证单容器、静态资源托管、Token 登录、Cursor 运行时页
 - 开发态默认接真实 Cursor 运行时；尽量支持 Docker 内运行以减少宿主机污染
 - 本机入口可先偏 Windows（`.bat`）
+- **改 Rust 后端后需重启 `scripts/dev.bat`**：若 `agent-manager-server` 进程仍在跑，`cargo build` 可能因 exe 被占用失败；即使只改了前端，未重启时 `:3000` 仍是旧 API（验收/联调会误判为未实现）
 
 ### 测试
 

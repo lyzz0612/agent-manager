@@ -1,6 +1,6 @@
 use host_model::{
-    AgentSummary, CursorAccountStatus, CursorRuntimeStatus, OverviewData, PluginDetail,
-    PluginSummary,
+    AgentSummary, CursorAccountStatus, CursorRuntimeStatus, GhAccountStatus, OverviewData,
+    PluginDetail, PluginSummary,
 };
 use std::collections::HashMap;
 use std::time::Instant;
@@ -14,6 +14,7 @@ pub enum RefreshScope {
     Plugin(String),
     CursorRuntime,
     CursorAccount,
+    GhAccount,
 }
 
 impl RefreshScope {
@@ -29,6 +30,7 @@ impl RefreshScope {
                 .ok_or_else(|| "plugin scope 需要 plugin_id".to_string()),
             "cursor_runtime" => Ok(Self::CursorRuntime),
             "cursor_account" => Ok(Self::CursorAccount),
+            "gh_account" => Ok(Self::GhAccount),
             other => Err(format!("未知 cache scope: {other}")),
         }
     }
@@ -42,6 +44,7 @@ impl RefreshScope {
             Self::Plugin(_) => "plugin",
             Self::CursorRuntime => "cursor_runtime",
             Self::CursorAccount => "cursor_account",
+            Self::GhAccount => "gh_account",
         }
     }
 }
@@ -54,6 +57,7 @@ pub struct RuntimeCache {
     plugin_details: HashMap<String, PluginDetail>,
     cursor_runtime: Option<CursorRuntimeStatus>,
     cursor_account: Option<CursorAccountStatus>,
+    gh_account: Option<GhAccountStatus>,
 }
 
 impl RuntimeCache {
@@ -107,6 +111,14 @@ impl RuntimeCache {
 
     pub fn set_cursor_account(&mut self, value: CursorAccountStatus) {
         self.cursor_account = Some(value);
+    }
+
+    pub fn gh_account(&self) -> Option<&GhAccountStatus> {
+        self.gh_account.as_ref()
+    }
+
+    pub fn set_gh_account(&mut self, value: GhAccountStatus) {
+        self.gh_account = Some(value);
     }
 }
 

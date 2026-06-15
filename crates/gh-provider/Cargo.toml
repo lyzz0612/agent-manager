@@ -1,5 +1,5 @@
 [package]
-name = "app-core"
+name = "gh-provider"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -7,13 +7,9 @@ publish.workspace = true
 
 [dependencies]
 anyhow.workspace = true
-cursor-provider = { path = "../cursor-provider" }
-gh-provider = { path = "../gh-provider" }
 host-fs = { path = "../host-fs" }
 host-model = { path = "../host-model" }
 host-proc = { path = "../host-proc" }
-paseo-provider = { path = "../paseo-provider" }
-serde.workspace = true
+regex.workspace = true
 serde_json.workspace = true
 tracing.workspace = true
-uuid.workspace = true
