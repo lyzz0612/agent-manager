@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { isAbortError, requestJson } from "../api";
 import { SkillsInstallDialog } from "../components/SkillsInstallDialog";
 import { PageLoading, Panel } from "../components/ui";
-import { AppRoute, buildSkillsPath } from "../routing";
+import { AppRoute, buildSkillApiFileId, buildSkillApiFolderId, buildSkillsPath, skillFileSlug, skillFolderSlug } from "../routing";
 import type {
   AgentSummary,
   SkillDocument,
@@ -51,6 +51,10 @@ export function SkillsPage({
     [scope, skills],
   );
 
+  const activeFolderApiId = folderId ? buildSkillApiFolderId(scope, folderId) : undefined;
+  const activeFolderName =
+    scopedSkills.find((skill) => skill.id === activeFolderApiId)?.name ?? folderId;
+
   useEffect(() => {
     const controller = new AbortController();
     const { signal } = controller;
@@ -78,7 +82,7 @@ export function SkillsPage({
 
         if (folderId) {
           const nextFiles = await requestJson<SkillFileSummary[]>(
-            `/api/profile/skills/${encodeURIComponent(folderId)}/files`,
+            `/api/profile/skills/${encodeURIComponent(buildSkillApiFolderId(scope, folderId))}/files`,
             { signal },
           );
           if (!signal.aborted) {
@@ -88,7 +92,7 @@ export function SkillsPage({
 
         if (fileId) {
           const document = await requestJson<SkillDocument>(
-            `/api/profile/skills/${encodeURIComponent(fileId)}`,
+            `/api/profile/skills/${encodeURIComponent(buildSkillApiFileId(scope, folderId, fileId))}`,
             { signal },
           );
           if (!signal.aborted) {
@@ -113,7 +117,7 @@ export function SkillsPage({
     return () => {
       controller.abort();
     };
-  }, [fileId, folderId, refreshKey, onError]);
+  }, [fileId, folderId, refreshKey, onError, scope]);
 
   useEffect(() => {
     if (folderId || fileId) {
@@ -229,9 +233,7 @@ export function SkillsPage({
                 >
                   ← 返回文件夹列表
                 </button>
-                <h3>
-                  {scopedSkills.find((skill) => skill.id === folderId)?.name ?? folderId}
-                </h3>
+                <h3>{activeFolderName}</h3>
               </div>
               <div className="skill-list-items">
                 {skillFiles.length === 0 ? (
@@ -241,7 +243,15 @@ export function SkillsPage({
                     <button
                       key={file.id}
                       className="skill-list-item"
-                      onClick={() => navigate(buildSkillsPath(scope, folderId, file.id))}
+                      onClick={() =>
+                        navigate(
+                          buildSkillsPath(
+                            scope,
+                            folderId,
+                            skillFileSlug(file.agent, file.folder, file.id),
+                          ),
+                        )
+                      }
                       type="button"
                     >
                       <span>{file.name}</span>
@@ -260,7 +270,9 @@ export function SkillsPage({
                   <button
                     key={skill.id}
                     className="skill-list-item skill-list-item--folder"
-                    onClick={() => navigate(buildSkillsPath(scope, skill.id))}
+                    onClick={() =>
+                      navigate(buildSkillsPath(scope, skillFolderSlug(skill.agent, skill.id)))
+                    }
                     type="button"
                   >
                     <span>{skill.name}</span>

@@ -30,6 +30,53 @@ export const PAGE_TITLES: Record<PageId, string> = {
 
 const AGENT_TABS = new Set<AgentDetailTab>(["overview", "account", "config"]);
 
+function decodePathSegment(segment: string): string {
+  try {
+    return decodeURIComponent(segment);
+  } catch {
+    return segment;
+  }
+}
+
+/** URL 中的 folder 段（不含 agent 前缀），如 `cs-brainstorm`。 */
+export function skillFolderSlug(agent: string, id: string): string {
+  const prefix = `${agent}/`;
+  return id.startsWith(prefix) ? id.slice(prefix.length) : id;
+}
+
+/** URL 中的 file 段（文件夹内相对路径），如 `SKILL.md` 或 `references/foo.md`。 */
+export function skillFileSlug(agent: string, folder: string, id: string): string {
+  const prefix = `${agent}/${folder}/`;
+  return id.startsWith(prefix) ? id.slice(prefix.length) : id;
+}
+
+/** 将 URL folder 段还原为 API 所需的 `agent/文件夹名`。 */
+export function buildSkillApiFolderId(scope: string, folderSlug: string): string {
+  const decoded = decodePathSegment(folderSlug);
+  const scopePrefix = `${scope}/`;
+  if (decoded.startsWith(scopePrefix) || decoded.includes("/")) {
+    return decoded;
+  }
+  return `${scope}/${decoded}`;
+}
+
+/** 将 URL file 段还原为 API 所需的完整 skill 文件 id。 */
+export function buildSkillApiFileId(
+  scope: string,
+  folderSlug: string | undefined,
+  fileSlug: string,
+): string {
+  const decodedFile = decodePathSegment(fileSlug);
+  const scopePrefix = `${scope}/`;
+  if (decodedFile.startsWith(scopePrefix)) {
+    return decodedFile;
+  }
+  if (!folderSlug) {
+    return decodedFile;
+  }
+  return `${buildSkillApiFolderId(scope, folderSlug)}/${decodedFile}`;
+}
+
 export function parseRoute(pathname: string): AppRoute {
   const normalized = pathname.replace(/\/+$/, "") || "/";
   const segments = normalized.split("/").filter(Boolean);
@@ -71,9 +118,9 @@ export function parseRoute(pathname: string): AppRoute {
         return { page: "skills", scope: "common" };
       }
 
-      const scope = segments[1];
-      const folderId = segments[2];
-      const fileId = segments[3];
+      const scope = decodePathSegment(segments[1]);
+      const folderId = segments[2] ? decodePathSegment(segments[2]) : undefined;
+      const fileId = segments[3] ? decodePathSegment(segments[3]) : undefined;
 
       if (segments.length > 4) {
         return { page: "unknown" };
