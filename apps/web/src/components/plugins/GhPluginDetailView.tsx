@@ -176,8 +176,20 @@ export function GhPluginDetailView({
           {loginSession?.error ? (
             <p className="status-banner error">{loginSession.error}</p>
           ) : null}
+          {!accountStatus?.logged_in &&
+          (loginSession?.active || startingLogin) &&
+          loginSession?.message &&
+          !loginSession.device_code ? (
+            <p className="muted gh-login-hint">{loginSession.message}</p>
+          ) : null}
           {!accountStatus?.logged_in && loginSession?.device_code ? (
-            <InfoRow label="验证码" value={loginSession.device_code} />
+            <div className="gh-device-code-block">
+              <p className="gh-device-code-label">一次性验证码</p>
+              <p className="gh-device-code">{loginSession.device_code}</p>
+              <p className="muted gh-device-code-hint">
+                复制上方验证码，在下方链接页面中粘贴并授权。
+              </p>
+            </div>
           ) : null}
           {!accountStatus?.logged_in && loginSession?.auth_url ? (
             <a
@@ -186,7 +198,7 @@ export function GhPluginDetailView({
               rel="noreferrer"
               target="_blank"
             >
-              {loginSession.auth_url}
+              打开 GitHub 授权页面
             </a>
           ) : null}
         </Panel>

@@ -189,6 +189,38 @@ textarea {
   margin-top: 12px;
 }
 
+.gh-login-hint {
+  margin-top: 12px;
+}
+
+.gh-device-code-block {
+  margin-top: 16px;
+  padding: 16px;
+  border-radius: 10px;
+  border: 1px solid rgba(56, 189, 248, 0.35);
+  background: rgba(14, 116, 144, 0.15);
+}
+
+.gh-device-code-label {
+  margin: 0 0 8px;
+  font-size: 13px;
+  color: #94a3b8;
+}
+
+.gh-device-code {
+  margin: 0;
+  font-size: 28px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  color: #e0f2fe;
+}
+
+.gh-device-code-hint {
+  margin: 10px 0 0;
+  font-size: 13px;
+}
+
 .screen-message {
   min-height: 100vh;
   display: grid;

@@ -9,7 +9,7 @@ use host_model::{
 };
 use host_proc::{
     run_command_capture_with_env_timeout, run_command_streaming_with_env, run_command_with_env,
-    CommandLineSink, OutputStream,
+    strip_ansi, CommandLineSink, OutputStream,
 };
 use regex::Regex;
 use serde_json::Value;
@@ -550,6 +550,8 @@ impl GhProvider {
                 .env("BROWSER", "false")
                 .env("GH_BROWSER", "false")
                 .env("GH_FORCE_TTY", "1")
+                .env("NO_COLOR", "1")
+                .env("CLICOLOR", "0")
                 .stdin(Stdio::piped())
                 .stdout(Stdio::piped())
                 .stderr(Stdio::piped());
@@ -564,7 +566,11 @@ impl GhProvider {
 
             if let Some(mut stdin) = child.stdin.take() {
                 std::thread::spawn(move || {
-                    let _ = stdin.write_all(b"\n");
+                    for _ in 0..120 {
+                        let _ = stdin.write_all(b"\n");
+                        let _ = stdin.flush();
+                        std::thread::sleep(Duration::from_millis(500));
+                    }
                 });
             }
 
@@ -800,7 +806,8 @@ fn parse_gh_account_status(output: &str) -> GhAccountStatus {
 }
 
 fn update_login_session_from_line(session: &Arc<Mutex<GhLoginSessionState>>, line: &str) {
-    let trimmed = line.trim();
+    let normalized = strip_ansi(line).replace('\r', "");
+    let trimmed = normalized.trim();
     if trimmed.is_empty() {
         return;
     }
@@ -830,9 +837,10 @@ fn set_login_session_error(session: &Arc<Mutex<GhLoginSessionState>>, message: S
 }
 
 fn extract_device_code(text: &str) -> Option<String> {
-    Regex::new(r"(?i)\b([A-Z0-9]{4}-[A-Z0-9]{4})\b")
+    let plain = strip_ansi(text).replace('\r', "");
+    Regex::new(r"(?i)(?:one-time code:\s*)?([A-Z0-9]{4}-[A-Z0-9]{4})")
         .ok()?
-        .captures(text)
+        .captures(&plain)
         .and_then(|captures| captures.get(1))
         .map(|value| value.as_str().to_uppercase())
 }
@@ -848,4 +856,27 @@ struct NoopSink;
 
 impl CommandLineSink for NoopSink {
     fn on_line(&self, _stream: OutputStream, _line: &str) {}
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn extract_device_code_from_plain_gh_output() {
+        let line = "! First copy your one-time code: 830D-A74C";
+        assert_eq!(
+            extract_device_code(line).as_deref(),
+            Some("830D-A74C")
+        );
+    }
+
+    #[test]
+    fn extract_device_code_strips_ansi_color() {
+        let line = "\x1b[1m!\x1b[0m First copy your one-time code: \x1b[1m830D-A74C\x1b[0m";
+        assert_eq!(
+            extract_device_code(line).as_deref(),
+            Some("830D-A74C")
+        );
+    }
 }
