@@ -207,6 +207,13 @@ textarea {
   color: #94a3b8;
 }
 
+.gh-device-code-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
 .gh-device-code {
   margin: 0;
   font-size: 28px;
@@ -214,6 +221,10 @@ textarea {
   letter-spacing: 0.12em;
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   color: #e0f2fe;
+}
+
+.gh-device-code-copy {
+  flex-shrink: 0;
 }
 
 .gh-device-code-hint {

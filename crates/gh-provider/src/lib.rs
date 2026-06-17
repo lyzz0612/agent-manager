@@ -33,6 +33,7 @@ struct GhLoginSessionState {
     device_code: Option<String>,
     message: String,
     error: Option<String>,
+    pending_account_refresh: bool,
 }
 
 fn login_session() -> Arc<Mutex<GhLoginSessionState>> {
@@ -301,6 +302,14 @@ impl GhProvider {
             message: guard.message.clone(),
             error: guard.error.clone(),
         }
+    }
+
+    pub fn take_pending_account_refresh(&self) -> bool {
+        let session = login_session();
+        let mut guard = session.lock().expect("gh login session lock poisoned");
+        let pending = guard.pending_account_refresh;
+        guard.pending_account_refresh = false;
+        pending
     }
 
     pub fn logout(&self) -> Result<ActionMessage> {
@@ -620,6 +629,9 @@ impl GhProvider {
             match exit_status {
                 Ok(status) if status.success() => {
                     guard.message = "登录成功。".to_string();
+                    guard.auth_url = None;
+                    guard.device_code = None;
+                    guard.pending_account_refresh = true;
                     info!(
                         plugin_id = GH_PLUGIN_ID,
                         elapsed_ms = started.elapsed().as_millis(),
@@ -788,10 +800,11 @@ fn run_gh_cli(
 }
 
 fn parse_gh_account_status(output: &str) -> GhAccountStatus {
-    let lower = output.to_ascii_lowercase();
-    let username = Regex::new(r"(?i)logged in to github\.com as ([^\s]+)")
+    let plain = strip_ansi(output);
+    let lower = plain.to_ascii_lowercase();
+    let username = Regex::new(r"(?i)logged in to github\.com (?:account|as) ([^\s(]+)")
         .ok()
-        .and_then(|regex| regex.captures(output))
+        .and_then(|regex| regex.captures(&plain))
         .and_then(|captures| captures.get(1))
         .map(|value| value.as_str().to_string());
     let logged_out = lower.contains("not logged in") || lower.contains("no accounts");
@@ -878,5 +891,21 @@ mod tests {
             extract_device_code(line).as_deref(),
             Some("830D-A74C")
         );
+    }
+
+    #[test]
+    fn parse_gh_account_status_reads_account_username() {
+        let output = "github.com\n ✓ Logged in to github.com account williammartin (keyring)\n - Active account: true\n";
+        let status = parse_gh_account_status(output);
+        assert!(status.logged_in);
+        assert_eq!(status.username.as_deref(), Some("williammartin"));
+    }
+
+    #[test]
+    fn parse_gh_account_status_reads_as_username() {
+        let output = "github.com\n✓ Logged in to github.com as mntlty (keyring)\n";
+        let status = parse_gh_account_status(output);
+        assert!(status.logged_in);
+        assert_eq!(status.username.as_deref(), Some("mntlty"));
     }
 }

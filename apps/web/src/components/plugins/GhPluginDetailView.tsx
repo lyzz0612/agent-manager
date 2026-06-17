@@ -31,6 +31,22 @@ export function GhPluginDetailView({
   const [loading, setLoading] = useState(true);
   const [startingLogin, setStartingLogin] = useState(false);
   const [loggingOut, setLoggingOut] = useState(false);
+  const [deviceCodeCopied, setDeviceCodeCopied] = useState(false);
+
+  async function copyDeviceCode() {
+    const code = loginSession?.device_code;
+    if (!code) {
+      return;
+    }
+
+    try {
+      await navigator.clipboard.writeText(code);
+      setDeviceCodeCopied(true);
+      window.setTimeout(() => setDeviceCodeCopied(false), 2000);
+    } catch {
+      setDeviceCodeCopied(false);
+    }
+  }
 
   async function reloadAccount() {
     const account = await requestJson<GhAccountStatus>("/api/gh/account");
@@ -72,6 +88,10 @@ export function GhPluginDetailView({
   }
 
   useEffect(() => {
+    setDeviceCodeCopied(false);
+  }, [loginSession?.device_code]);
+
+  useEffect(() => {
     const controller = new AbortController();
     const { signal } = controller;
 
@@ -102,18 +122,48 @@ export function GhPluginDetailView({
       return;
     }
 
-    const shouldPoll =
-      loginSession?.active || loginSession?.auth_url || loginSession?.device_code || startingLogin;
-    if (!shouldPoll || accountStatus?.logged_in) {
+    if (accountStatus?.logged_in) {
       return;
     }
 
-    const timer = window.setInterval(() => {
-      void reloadLoginSession().then((session) => {
-        if (!session.active && !session.error) {
-          void reloadAccount();
+    const shouldPoll =
+      loginSession?.active || loginSession?.auth_url || loginSession?.device_code || startingLogin;
+    if (!shouldPoll) {
+      return;
+    }
+
+    const poll = async () => {
+      try {
+        const [account, session] = await Promise.all([
+          reloadAccount(),
+          reloadLoginSession(),
+        ]);
+
+        if (account.logged_in) {
+          setStartingLogin(false);
+          setLoginSession((current) =>
+            current
+              ? {
+                  ...current,
+                  active: false,
+                  auth_url: null,
+                  device_code: null,
+                  message: "登录成功。",
+                  error: null,
+                }
+              : current,
+          );
+        } else if (!session.active && !session.auth_url && !session.device_code) {
+          setStartingLogin(false);
         }
-      });
+      } catch {
+        // 登录流程进行中，忽略短暂请求失败。
+      }
+    };
+
+    void poll();
+    const timer = window.setInterval(() => {
+      void poll();
     }, 2000);
 
     return () => window.clearInterval(timer);
@@ -176,18 +226,31 @@ export function GhPluginDetailView({
           {loginSession?.error ? (
             <p className="status-banner error">{loginSession.error}</p>
           ) : null}
+          {loginSession?.message === "登录成功。" && !accountStatus?.logged_in ? (
+            <p className="status-banner success">{loginSession.message}</p>
+          ) : null}
           {!accountStatus?.logged_in &&
           (loginSession?.active || startingLogin) &&
           loginSession?.message &&
+          loginSession.message !== "登录成功。" &&
           !loginSession.device_code ? (
             <p className="muted gh-login-hint">{loginSession.message}</p>
           ) : null}
           {!accountStatus?.logged_in && loginSession?.device_code ? (
             <div className="gh-device-code-block">
               <p className="gh-device-code-label">一次性验证码</p>
-              <p className="gh-device-code">{loginSession.device_code}</p>
+              <div className="gh-device-code-row">
+                <p className="gh-device-code">{loginSession.device_code}</p>
+                <button
+                  className="secondary gh-device-code-copy"
+                  onClick={() => void copyDeviceCode()}
+                  type="button"
+                >
+                  {deviceCodeCopied ? "已复制" : "复制验证码"}
+                </button>
+              </div>
               <p className="muted gh-device-code-hint">
-                复制上方验证码，在下方链接页面中粘贴并授权。
+                点击复制后在下方授权页面粘贴并确认授权。
               </p>
             </div>
           ) : null}

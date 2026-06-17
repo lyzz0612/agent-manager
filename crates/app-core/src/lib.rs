@@ -457,7 +457,9 @@ impl AppState {
     }
 
     pub fn gh_account_status(&self) -> GhAccountStatus {
-        if self.gh_provider().login_session_status().active {
+        let session_active = self.gh_provider().login_session_status().active;
+        let pending_refresh = self.gh_provider().take_pending_account_refresh();
+        if session_active || pending_refresh {
             let status = self.gh_provider().account_status();
             self.cache
                 .write()
