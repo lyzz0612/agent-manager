@@ -1,7 +1,7 @@
 use anyhow::{anyhow, Context, Result};
 use host_fs::{
-    find_plugin_definition, gh_cli_install_root, plugin_home_dir, resolve_gh_cli_binary,
-    user_home_dir, user_path_with_local_bin, GH_PLUGIN_ID, SUPPORTED_PLUGINS,
+    find_plugin_definition, gh_cli_install_command, gh_cli_install_root, plugin_home_dir,
+    resolve_gh_cli_binary, user_home_dir, user_path_with_local_bin, GH_PLUGIN_ID, SUPPORTED_PLUGINS,
 };
 use host_model::{
     ActionMessage, AuthStep, GhAccountStatus, GhAuthFlowStatus, GhLoginSessionStatus,
@@ -339,7 +339,11 @@ impl GhProvider {
             data_dir: status.data_dir,
             install_supported: definition.install_supported,
             install_command: if definition.install_supported {
-                Some(definition.install_command.to_string())
+                Some(if definition.id == GH_PLUGIN_ID {
+                    gh_cli_install_command()
+                } else {
+                    definition.install_command.to_string()
+                })
             } else {
                 None
             },

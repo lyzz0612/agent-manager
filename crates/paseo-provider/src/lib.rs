@@ -263,7 +263,7 @@ impl PaseoProvider {
 
         let daemon_status = capture_paseo_cli_output(
             &binary,
-            &["daemon", "status"],
+            &["daemon", "status", "--json"],
             &home,
             &env,
             Some(Duration::from_secs(8)),
@@ -457,12 +457,12 @@ impl PaseoProvider {
         let binary = resolve_paseo_cli_binary(home, env)?;
         let status = capture_paseo_cli_output(
             &binary,
-            &["daemon", "status"],
+            &["daemon", "status", "--json"],
             home,
             env,
             Some(Duration::from_secs(8)),
         );
-        if status.contains("running") {
+        if is_paseo_daemon_running(&status) {
             return Ok(());
         }
 
@@ -636,6 +636,63 @@ fn capture_paseo_cli_output(
     timeout: Option<Duration>,
 ) -> String {
     run_paseo_cli(program, args, home, env, timeout).unwrap_or_else(|error| error.to_string())
+}
+
+fn is_paseo_daemon_running(status_output: &str) -> bool {
+    parse_paseo_local_daemon_state(status_output)
+        .map(|state| state == "running")
+        .unwrap_or(false)
+}
+
+fn parse_paseo_local_daemon_state(status_output: &str) -> Option<&'static str> {
+    let trimmed = status_output.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+
+    if let Ok(json) = serde_json::from_str::<Value>(trimmed) {
+        if let Some(local_daemon) = json.get("localDaemon").and_then(Value::as_str) {
+            return normalize_paseo_local_daemon_state(local_daemon);
+        }
+
+        if let Some(rows) = json.as_array() {
+            for row in rows {
+                let key = row.get("key").and_then(Value::as_str)?;
+                if key.eq_ignore_ascii_case("local daemon") {
+                    let value = row.get("value").and_then(Value::as_str)?;
+                    return normalize_paseo_local_daemon_state(value);
+                }
+            }
+        }
+    }
+
+    for line in trimmed.lines() {
+        let normalized = line.trim();
+        if normalized
+            .to_ascii_lowercase()
+            .starts_with("local daemon")
+        {
+            let value = normalized
+                .strip_prefix("Local Daemon")
+                .or_else(|| normalized.strip_prefix("local daemon"))
+                .map(str::trim)
+                .unwrap_or(normalized);
+            let value = value
+                .trim_start_matches(|ch: char| ch.is_whitespace() || ch == '|' || ch == ':');
+            return normalize_paseo_local_daemon_state(value);
+        }
+    }
+
+    None
+}
+
+fn normalize_paseo_local_daemon_state(raw: &str) -> Option<&'static str> {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "running" => Some("running"),
+        "stopped" | "stale_pid" => Some("stopped"),
+        "unresponsive" => Some("unresponsive"),
+        _ => None,
+    }
 }
 
 fn sanitize_daemon_pair_json(raw: String) -> String {

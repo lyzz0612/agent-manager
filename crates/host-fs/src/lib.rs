@@ -52,18 +52,12 @@ pub const PASEO_PLUGIN_ID: &str = "paseo";
 pub const PASEO_OFFICIAL_RELAY_ENDPOINT: &str = "relay.paseo.sh:443";
 pub const PASEO_DEFAULT_WORKSPACE: &str = "/workspaces/default";
 
-#[cfg(windows)]
-const GH_INSTALL_COMMAND: &str = "winget install --id GitHub.cli";
-#[cfg(not(windows))]
-const GH_INSTALL_COMMAND: &str =
-    "curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg | sudo dd of=/usr/share/keyrings/githubcli-archive-keyring.gpg && sudo apt install gh";
-
 /// Phase 1 支持的插件列表；扩展时在此注册即可。
 pub const SUPPORTED_PLUGINS: &[PluginDefinition] = &[
     PluginDefinition {
         id: PASEO_PLUGIN_ID,
         name: "Paseo",
-        description: "Paseo CLI 与 daemon，管理 agent relay 与 workspace 配对。",
+        description: "Paseo CLI 与本地 daemon：管理 AI agent 生命周期、relay 远程接入，以及 workspace 配对；详情页可查看 daemon 状态并获取配对链接。",
         install_supported: true,
         official_url: "https://paseo.sh/docs",
         install_command: "npm install -g @getpaseo/cli",
@@ -75,7 +69,7 @@ pub const SUPPORTED_PLUGINS: &[PluginDefinition] = &[
         description: "GitHub 官方 CLI，在网页内完成 GitHub.com OAuth 授权。",
         install_supported: true,
         official_url: "https://cli.github.com/",
-        install_command: GH_INSTALL_COMMAND,
+        install_command: "",
         default_workspace: "",
     },
 ];
@@ -91,9 +85,20 @@ pub fn plugin_home_dir(home: &Path, plugin_id: &str) -> PathBuf {
     }
 }
 
-/// 当前平台的 GitHub CLI 官方安装命令（供 UI 展示）。
-pub fn gh_cli_install_command() -> &'static str {
-    GH_INSTALL_COMMAND
+/// 当前运行环境的 GitHub CLI 安装说明（供 UI 展示；实际安装由管理页下载官方 release）。
+pub fn gh_cli_install_command() -> String {
+    match std::env::consts::OS {
+        "windows" => "winget install --id GitHub.cli".to_string(),
+        "macos" => "brew install gh".to_string(),
+        "linux" => {
+            "推荐点击「安装」，由管理页下载官方 release 到 ~/.local/bin。\n\
+             手动（Debian/Ubuntu）：sudo apt install gh\n\
+             手动（Fedora/RHEL）：sudo dnf install gh\n\
+             更多平台：https://github.com/cli/cli#installation"
+                .to_string()
+        }
+        other => format!("详见 https://cli.github.com/ 获取 {other} 安装说明"),
+    }
 }
 
 /// GitHub CLI 受管安装根目录 → `~/.local/share/gh`。
@@ -130,17 +135,63 @@ pub fn gh_cli_binary_candidates(home: &Path) -> Vec<PathBuf> {
     candidates
 }
 
-/// 解析已安装的 GitHub CLI 可执行文件。
+/// 解析已安装的 GitHub CLI 可执行文件（受管目录、PATH 与常见系统路径）。
 pub fn resolve_gh_cli_binary(home: &Path) -> Result<PathBuf> {
     for candidate in gh_cli_binary_candidates(home) {
-        if candidate.exists() {
+        if candidate.is_file() {
+            return Ok(candidate.canonicalize().unwrap_or(candidate));
+        }
+    }
+
+    if let Some(candidate) = find_gh_in_path_env(Some(&user_path_with_local_bin(home))) {
+        return Ok(candidate);
+    }
+
+    if let Some(candidate) = find_gh_in_path_env(None) {
+        return Ok(candidate);
+    }
+
+    for candidate in gh_system_binary_candidates() {
+        if candidate.is_file() {
             return Ok(candidate.canonicalize().unwrap_or(candidate));
         }
     }
 
     Err(anyhow!(
-        "未找到 GitHub CLI（~/.local/bin/gh 或 ~/.local/share/gh/*/bin/gh）"
+        "未找到 GitHub CLI（~/.local/bin/gh、PATH 中的 gh 或 /usr/bin/gh 等）"
     ))
+}
+
+fn gh_system_binary_candidates() -> Vec<PathBuf> {
+    if cfg!(windows) {
+        vec![
+            PathBuf::from(r"C:\Program Files\GitHub CLI\gh.exe"),
+            PathBuf::from(r"C:\Program Files (x86)\GitHub CLI\gh.exe"),
+        ]
+    } else {
+        vec![
+            PathBuf::from("/usr/local/bin/gh"),
+            PathBuf::from("/usr/bin/gh"),
+            PathBuf::from("/bin/gh"),
+        ]
+    }
+}
+
+fn find_gh_in_path_env(path_override: Option<&str>) -> Option<PathBuf> {
+    let path_var = path_override
+        .map(str::to_string)
+        .or_else(|| env::var("PATH").ok())?;
+    let binary_name = if cfg!(windows) { "gh.exe" } else { "gh" };
+    let separator = if cfg!(windows) { ';' } else { ':' };
+
+    for dir in path_var.split(separator).map(str::trim).filter(|dir| !dir.is_empty()) {
+        let candidate = PathBuf::from(dir).join(binary_name);
+        if candidate.is_file() {
+            return Some(candidate.canonicalize().unwrap_or(candidate));
+        }
+    }
+
+    None
 }
 
 pub fn plugin_config_path(home: &Path, plugin_id: &str) -> PathBuf {

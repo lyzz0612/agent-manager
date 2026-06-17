@@ -224,19 +224,31 @@ export function PluginsPage({ route, refreshKey, navigate, onNotify, onError }: 
             {plugin.description ? (
               <p className="agent-card__description">{plugin.description}</p>
             ) : null}
-            {plugin.installed ? (
+            {plugin.official_url ? (
+              <a
+                className="external-link agent-card__doc-link"
+                href={plugin.official_url}
+                onClick={(event) => event.stopPropagation()}
+                rel="noreferrer"
+                target="_blank"
+              >
+                官方文档
+              </a>
+            ) : null}
+            {plugin.installed && plugin.id !== "paseo" ? (
               <dl className="agent-card__meta">
                 <div>
                   <dt>数据目录</dt>
                   <dd className="agent-card__path">{plugin.data_dir}</dd>
                 </div>
               </dl>
-            ) : (
+            ) : null}
+            {!plugin.installed ? (
               <div className="agent-card__install-cmd">
                 <p className="agent-card__install-label">安装命令</p>
                 <code>{resolveInstallCommand(plugin)}</code>
               </div>
-            )}
+            ) : null}
             <div className="actions agent-card__actions">
               {plugin.installed ? (
                 <>
